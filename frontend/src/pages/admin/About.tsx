@@ -180,7 +180,7 @@ export default function AdminAbout() {
                     <Badge size="2" variant="soft" color="green">Cloudflare Workers</Badge>
                   </Flex>
                 </Box>
-                <Button variant="soft" onClick={() => openExternal('https://github.com/kadidalax/cf-vps-monitor')} aria-label="GitHub">
+                <Button variant="soft" onClick={() => openExternal('https://github.com/tuzili/cf-vps-monitor')} aria-label="GitHub">
                   <Github size={16} />
                 </Button>
               </Flex>

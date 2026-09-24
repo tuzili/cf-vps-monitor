@@ -37,15 +37,23 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # Both packages type-check here: frontend runs `tsc --noEmit`,
+      # worker runs `wrangler types --check && tsc --noEmit`.
       - name: Lint
         run: npm run lint
 
       - name: Build
         run: npm run build
 
+      # `npm test` chains test:js (node --test across the repo)
+      # and test:go. The gate is the exit code -- never the output line count:
+      # node --test prints per-file for top-level bare assertions and per-test for
+      # test() files, so counting lines silently misses whole files.
       - name: Test
         run: npm test
 
+      # These fixtures drop to nobody to check real filesystem access.
+      # Their service commands are isolated; the normal runner skips them.
       - name: Installer service account permissions
         run: |
           sudo "$(command -v node)" --test --test-name-pattern='^compat (systemd|openrc) (default paths|must not open permissions)' agent/install-compat.test.mjs
@@ -54,7 +62,7 @@ jobs:
       - name: Agent root collector permissions
         working-directory: agent
         run: |
-          go test -c -o "$RUNNER_TEMP/cf-monitor-agent-native.test"
+          go test -c -o "$RUNNER_TEMP/cf-monitor-agent-native.test" .
           sudo sh -s -- "$RUNNER_TEMP/cf-monitor-agent-native.test" <<'NATIVE'
           set -eu
           native_dir="$(mktemp -d /run/cf-monitor-agent-native.XXXXXX)"
