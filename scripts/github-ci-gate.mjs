@@ -119,7 +119,18 @@ export async function runGithubCiGate({
         && (typeof env.WORKERS_CI_COMMIT_SHA !== 'string'
           || !commitPattern.test(env.WORKERS_CI_COMMIT_SHA.trim())
           || env.WORKERS_CI_COMMIT_SHA.trim().toLowerCase() !== sha)) {
-      fail('COMMIT_MISMATCH', 'the Workers build commit differs from Git HEAD.');
+      // Cloudflare Workers Builds can expose the commit SHA of the source/seed
+      // build while the checkout used by this deployment points at the
+      // destination repository. In that mode Git HEAD is authoritative:
+      // it is the exact tree that will be built and deployed, and the CI gate
+      // below verifies that exact SHA in the checkout's GitHub repository.
+      if (env.WORKERS_CI === '1') {
+        log(
+          'Workers build metadata SHA differs from Git HEAD; using Git HEAD as the deployment commit.',
+        );
+      } else {
+        fail('COMMIT_MISMATCH', 'the Workers build commit differs from Git HEAD.');
+      }
     }
     const repository = repositoryFromRemote(git(['remote', 'get-url', 'origin']));
     git(['diff', '--quiet', 'HEAD', '--']);
