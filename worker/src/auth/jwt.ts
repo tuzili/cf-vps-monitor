@@ -38,8 +38,6 @@ export async function generateToken(
 ): Promise<string> {
   const now = Math.floor(Date.now() / 1000);
   const payload = {
-    kind: 'cf-monitor-session',
-    purpose: 'admin-session',
     userId,
     username,
     sessionVersion,
@@ -55,8 +53,6 @@ export async function verifyAdminToken(token: string, env: JwtEnv): Promise<Admi
 
   if (
     !payload ||
-    payload.kind !== 'cf-monitor-session' ||
-    payload.purpose !== 'admin-session' ||
     typeof payload.userId !== 'string' ||
     typeof payload.username !== 'string' ||
     typeof payload.sessionVersion !== 'number' ||

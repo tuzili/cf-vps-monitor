@@ -1,7 +1,7 @@
 /**
  * Shared TypeScript interfaces for CF VPS Monitor frontend
  */
-import { LastKnownRecord, LiveRecord } from './contexts/LiveDataContext';
+import { LiveRecord } from './contexts/LiveDataContext';
 
 export interface ClientInfo {
   uuid: string;
@@ -27,7 +27,6 @@ export interface ClientInfo {
   expired_at: string;
   traffic_limit: number;
   traffic_limit_type: string;
-  traffic_reset_day?: number;
   sort_order?: number;
   gpu_name?: string;
   version?: string;
@@ -40,8 +39,6 @@ export interface ClientInfo {
 export interface LiveDataMap {
   online: string[];
   data: Record<string, LiveRecord>;
-  last_known?: Record<string, LastKnownRecord>;
-  statusReady?: boolean;
   clients?: Array<{ uuid: string; name?: string; lastReportTime?: number; region?: string }>;
 }
 

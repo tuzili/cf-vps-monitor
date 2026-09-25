@@ -9,23 +9,10 @@ import { useNavigate, useParams } from 'react-router-dom';
 import { toast } from 'sonner';
 import Loading from '../../components/Loading';
 import { useApi } from '../../contexts/AuthContext';
-import { useAdminAction } from '../../hooks/useAdminAction';
 import { SettingCard, SettingInput, SettingTextarea } from '../../components/admin/SettingCard';
-import { summarizeSelectionValue } from '../../utils/batchPrefill';
 import { getChangedSettings, type SettingsMap } from '../../utils/settingsDiff';
 
 const notificationTabValues = ['settings', 'offline', 'expiry', 'load'] as const;
-
-/**
- * 默认离线通知宽限期（秒）。
- * 取 360 而非更短值，是为了给「上报间隔 120 秒」留足余量：落库节流最坏情况下
- * last_time 会拉开到约两倍上报间隔，宽限期过短会在链路正常时误报离线。
- * 需与 worker 侧 `DEFAULT_OFFLINE_GRACE_PERIOD_SEC` 保持一致。
- */
-const DEFAULT_GRACE_PERIOD_SEC = 360;
-
-/** 默认到期提前提醒天数。 */
-const DEFAULT_EXPIRY_ADVANCE_DAYS = 7;
 type NotificationTab = typeof notificationTabValues[number];
 type NotificationClient = {
   uuid: string;
@@ -85,15 +72,8 @@ function clientDisplayIp(client: NotificationClient) {
   return client.ipv4 || client.ipv6 || '';
 }
 
-function loadMetricUnit(metric?: string): string {
-  if (metric === 'temp') return '°C';
-  if (metric === 'load') return '';
-  return '%';
-}
-
 export default function AdminNotifications() {
   const apiFetch = useApi();
-  const { run: runAction, pendingActions } = useAdminAction();
   const navigate = useNavigate();
   const { tab: urlTab } = useParams<{ tab?: string }>();
   const initialTab = toNotificationTab(urlTab);
@@ -130,17 +110,15 @@ export default function AdminNotifications() {
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedClients, setSelectedClients] = useState<string[]>([]);
   const [batchDialogOpen, setBatchDialogOpen] = useState(false);
-  const [batchForm, setBatchForm] = useState({ enable: true, grace_period: DEFAULT_GRACE_PERIOD_SEC });
-  const [batchGraceMixed, setBatchGraceMixed] = useState(false);
+  const [batchForm, setBatchForm] = useState({ enable: true, grace_period: 180 });
   const [editDialogOpen, setEditDialogOpen] = useState(false);
   const [editingOffline, setEditingOffline] = useState<string | null>(null);
-  const [editForm, setEditForm] = useState({ enable: false, grace_period: DEFAULT_GRACE_PERIOD_SEC });
+  const [editForm, setEditForm] = useState({ enable: false, grace_period: 180 });
   const [expiryBatchDialogOpen, setExpiryBatchDialogOpen] = useState(false);
-  const [expiryBatchForm, setExpiryBatchForm] = useState({ enable: true, advance_days: DEFAULT_EXPIRY_ADVANCE_DAYS });
-  const [expiryBatchDaysMixed, setExpiryBatchDaysMixed] = useState(false);
+  const [expiryBatchForm, setExpiryBatchForm] = useState({ enable: true, advance_days: 7 });
   const [expiryEditDialogOpen, setExpiryEditDialogOpen] = useState(false);
   const [editingExpiry, setEditingExpiry] = useState<string | null>(null);
-  const [expiryEditForm, setExpiryEditForm] = useState({ enable: false, advance_days: DEFAULT_EXPIRY_ADVANCE_DAYS });
+  const [expiryEditForm, setExpiryEditForm] = useState({ enable: false, advance_days: 7 });
 
   // Load tab state
   const [loadDialogOpen, setLoadDialogOpen] = useState(false);
@@ -295,18 +273,18 @@ export default function AdminNotifications() {
   }, [clients, searchTerm]);
 
   // ─── Offline: toggle ───
-  const toggleOffline = (clientUuid: string, enable: boolean) => runAction('offline:' + clientUuid, async () => {
+  const toggleOffline = async (clientUuid: string, enable: boolean) => {
     const result = await apiFetch('/admin/notification/offline/edit', {
       method: 'POST',
-      body: JSON.stringify({ client: clientUuid, enable, grace_period: notificationMap.get(clientUuid)?.grace_period ?? DEFAULT_GRACE_PERIOD_SEC }),
+      body: JSON.stringify({ client: clientUuid, enable, grace_period: 180 }),
     });
     if (result.success) {
       toast.success(enable ? '已开启离线通知' : '已关闭离线通知');
-      await loadOfflineTab(true);
+      void loadOfflineTab(true);
     } else {
-      toast.error(result.error || '操作失败');
+      toast.error('操作失败');
     }
-  });
+  };
 
   // ─── Offline: single edit ───
   const openEditDialog = (clientUuid: string) => {
@@ -314,12 +292,12 @@ export default function AdminNotifications() {
     setEditingOffline(clientUuid);
     setEditForm({
       enable: existing?.enable || false,
-      grace_period: existing?.grace_period || DEFAULT_GRACE_PERIOD_SEC,
+      grace_period: existing?.grace_period || 180,
     });
     setEditDialogOpen(true);
   };
 
-  const saveSingleEdit = () => runAction('offline:edit', async () => {
+  const saveSingleEdit = async () => {
     if (!editingOffline) return;
     const result = await apiFetch('/admin/notification/offline/edit', {
       method: 'POST',
@@ -332,11 +310,11 @@ export default function AdminNotifications() {
     if (result.success) {
       toast.success('已更新');
       setEditDialogOpen(false);
-      await loadOfflineTab(true);
+      void loadOfflineTab(true);
     } else {
-      toast.error(result.error || '更新失败');
+      toast.error('更新失败');
     }
-  });
+  };
 
   // ─── Offline: batch edit ───
   const openBatchDialog = () => {
@@ -344,20 +322,11 @@ export default function AdminNotifications() {
       toast.error('请先选择服务器');
       return;
     }
-    // 预填选中节点的当前值而非固定数字：全部相同取该值，不一致取众数并提示。
-    // 未配置过通知的节点按默认值计入，使统计覆盖全部选中项。
-    const summary = summarizeSelectionValue(
-      selectedClients.map(
-        (uuid) => notificationMap.get(uuid)?.grace_period || DEFAULT_GRACE_PERIOD_SEC,
-      ),
-      DEFAULT_GRACE_PERIOD_SEC,
-    );
-    setBatchForm({ enable: true, grace_period: summary.value });
-    setBatchGraceMixed(!summary.consistent);
+    setBatchForm({ enable: true, grace_period: 180 });
     setBatchDialogOpen(true);
   };
 
-  const saveBatchEdit = () => runAction('offline:batch', async () => {
+  const saveBatchEdit = async () => {
     const payload = selectedClients.map((uuid) => ({
       client: uuid,
       enable: batchForm.enable,
@@ -371,11 +340,11 @@ export default function AdminNotifications() {
       toast.success(`已批量更新 ${selectedClients.length} 个节点`);
       setBatchDialogOpen(false);
       setSelectedClients([]);
-      await loadOfflineTab(true);
+      void loadOfflineTab(true);
     } else {
       toast.error('批量更新失败');
     }
-  });
+  };
 
   const toggleSelectAll = () => {
     if (selectedClients.length === filteredClients.length) {
@@ -385,7 +354,7 @@ export default function AdminNotifications() {
     }
   };
 
-  const toggleExpiry = (clientUuid: string, enable: boolean) => runAction('expiry:' + clientUuid, async () => {
+  const toggleExpiry = async (clientUuid: string, enable: boolean) => {
     const existing = expiryNotificationMap.get(clientUuid);
     const result = await apiFetch('/admin/notification/expiry/edit', {
       method: 'POST',
@@ -393,23 +362,23 @@ export default function AdminNotifications() {
     });
     if (result.success) {
       toast.success(enable ? '已开启到期通知' : '已关闭到期通知');
-      await loadExpiryTab(true);
+      void loadExpiryTab(true);
     } else {
-      toast.error(result.error || '操作失败');
+      toast.error('操作失败');
     }
-  });
+  };
 
   const openExpiryEditDialog = (clientUuid: string) => {
     const existing = expiryNotificationMap.get(clientUuid);
     setEditingExpiry(clientUuid);
     setExpiryEditForm({
       enable: existing?.enable || false,
-      advance_days: existing?.advance_days || DEFAULT_EXPIRY_ADVANCE_DAYS,
+      advance_days: existing?.advance_days || 7,
     });
     setExpiryEditDialogOpen(true);
   };
 
-  const saveExpirySingleEdit = () => runAction('expiry:edit', async () => {
+  const saveExpirySingleEdit = async () => {
     if (!editingExpiry) return;
     const result = await apiFetch('/admin/notification/expiry/edit', {
       method: 'POST',
@@ -422,29 +391,22 @@ export default function AdminNotifications() {
     if (result.success) {
       toast.success('已更新');
       setExpiryEditDialogOpen(false);
-      await loadExpiryTab(true);
+      void loadExpiryTab(true);
     } else {
-      toast.error(result.error || '更新失败');
+      toast.error('更新失败');
     }
-  });
+  };
 
   const openExpiryBatchDialog = () => {
     if (selectedClients.length === 0) {
       toast.error('请先选择服务器');
       return;
     }
-    const summary = summarizeSelectionValue(
-      selectedClients.map(
-        (uuid) => expiryNotificationMap.get(uuid)?.advance_days || DEFAULT_EXPIRY_ADVANCE_DAYS,
-      ),
-      DEFAULT_EXPIRY_ADVANCE_DAYS,
-    );
-    setExpiryBatchForm({ enable: true, advance_days: summary.value });
-    setExpiryBatchDaysMixed(!summary.consistent);
+    setExpiryBatchForm({ enable: true, advance_days: 7 });
     setExpiryBatchDialogOpen(true);
   };
 
-  const saveExpiryBatchEdit = () => runAction('expiry:batch', async () => {
+  const saveExpiryBatchEdit = async () => {
     const payload = selectedClients.map((uuid) => ({
       client: uuid,
       enable: expiryBatchForm.enable,
@@ -458,11 +420,11 @@ export default function AdminNotifications() {
       toast.success(`已批量更新 ${selectedClients.length} 个节点`);
       setExpiryBatchDialogOpen(false);
       setSelectedClients([]);
-      await loadExpiryTab(true);
+      void loadExpiryTab(true);
     } else {
       toast.error('批量更新失败');
     }
-  });
+  };
 
   // ─── Settings: global notification channel ───
   const updateSetting = (key: string, value: string) => {
@@ -568,11 +530,7 @@ export default function AdminNotifications() {
     setLoadDialogOpen(true);
   };
 
-  const saveLoadNotification = () => runAction('load:save', async () => {
-    if (!loadForm.all_clients && !loadForm.clients?.length) {
-      toast.error('请至少选择一台服务器');
-      return;
-    }
+  const saveLoadNotification = async () => {
     const payload = {
       ...loadForm,
       clients: loadForm.all_clients ? [] : loadForm.clients || [],
@@ -586,9 +544,9 @@ export default function AdminNotifications() {
       if (result.success) {
         toast.success('已更新');
         setLoadDialogOpen(false);
-        await loadLoadTab(true);
+        void loadLoadTab(true);
       } else {
-        toast.error(result.error || '更新失败');
+        toast.error('更新失败');
       }
     } else {
       const result = await apiFetch('/admin/notification/load/add', {
@@ -598,47 +556,41 @@ export default function AdminNotifications() {
       if (result.success) {
         toast.success('已添加');
         setLoadDialogOpen(false);
-        await loadLoadTab(true);
+        void loadLoadTab(true);
       } else {
-        toast.error(result.error || '添加失败');
+        toast.error('添加失败');
       }
     }
-  });
+  };
 
-  const deleteLoadNotification = (id: number) => runAction('load:delete:' + id, async () => {
+  const deleteLoadNotification = async (id: number) => {
     const result = await apiFetch(`/admin/notification/load/${id}`, {
       method: 'DELETE',
     });
     if (result.success) {
       toast.success('已删除');
-      await loadLoadTab(true);
+      void loadLoadTab(true);
     } else {
-      toast.error(result.error || '删除失败');
+      toast.error('删除失败');
     }
-  });
+  };
 
   // ─── Test message ───
-  // 测试一律以表单当前值为准：把当前设置随请求发出去，后端只取通知相关白名单字段，
-  // 空值按「未提供」回落到已保存配置。这样不必先保存就能测。
-  const sendTestMessage = () => runAction('test:telegram', async () => {
+  const sendTestMessage = async () => {
     try {
       const result = await apiFetch('/admin/test/sendMessage', {
         method: 'POST',
-        body: JSON.stringify({
-          message: 'CF VPS Monitor 测试消息 - 通知配置成功!',
-          channel: 'telegram',
-          settings,
-        }),
+        body: JSON.stringify({ message: 'CF VPS Monitor 测试消息 - 通知配置成功!' }),
       });
       if (result.success) {
         toast.success('测试消息已发送');
       } else {
         toast.error(result.error || '发送失败');
       }
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : '发送失败');
+    } catch {
+      toast.error('发送失败');
     }
-  });
+  };
 
   const sendTestEmail = async () => {
     setTestEmailSending(true);
@@ -649,7 +601,6 @@ export default function AdminNotifications() {
           channel: 'email',
           message: 'CF VPS Monitor 测试消息 - 邮件通知配置成功!',
           test_recipient: testRecipient.trim(),
-          settings,
         }),
       });
       if (result.success) {
@@ -672,7 +623,6 @@ export default function AdminNotifications() {
         body: JSON.stringify({
           channel: 'webhook',
           message: 'CF VPS Monitor 测试消息 - Webhook 通知配置成功!',
-          settings,
         }),
       });
       if (result.success) {
@@ -880,9 +830,7 @@ export default function AdminNotifications() {
                             type="password"
                             value={settings.email_smtp_password || ''}
                             onChange={(value) => updateSetting('email_smtp_password', value)}
-                            placeholder={settings.email_smtp_password_preview
-                              ? `${settings.email_smtp_password_preview}（留空则不修改）`
-                              : (settings.email_smtp_password_set === 'true' ? '已保存密码，留空则不修改' : 'SMTP 密码或授权码')}
+                            placeholder={settings.email_smtp_password_set === 'true' ? '已保存密码，留空则不修改' : 'SMTP 密码或授权码'}
                             width="34ch"
                           />
                         </div>
@@ -939,34 +887,26 @@ export default function AdminNotifications() {
                       <div>
                         <SettingInput
                           label="Bot Token"
-                          description={settings.telegram_bot_token_set === 'true'
-                            ? '已配置，留空则保持不变；填写新值才会覆盖'
-                            : '从 @BotFather 获取'}
+                          description="从 @BotFather 获取"
                           value={settings.telegram_bot_token || ''}
                           onChange={(value) => updateSetting('telegram_bot_token', value)}
-                          placeholder={settings.telegram_bot_token_preview
-                            ? `${settings.telegram_bot_token_preview}（留空则不修改）`
-                            : '123456789:ABCdefGHIjklMNOpqrsTUVwxyz'}
+                          placeholder="123456789:ABCdefGHIjklMNOpqrsTUVwxyz"
                           width="52ch"
                         />
                       </div>
                       <div>
                         <SettingInput
                           label="Chat ID"
-                          description={settings.telegram_chat_id_set === 'true'
-                            ? '已配置，留空则保持不变；填写新值才会覆盖'
-                            : '群组或用户 Chat ID'}
+                          description="群组或用户 Chat ID"
                           value={settings.telegram_chat_id || ''}
                           onChange={(value) => updateSetting('telegram_chat_id', value)}
-                          placeholder={settings.telegram_chat_id_preview
-                            ? `${settings.telegram_chat_id_preview}（留空则不修改）`
-                            : '-1001234567890'}
+                          placeholder="-1001234567890"
                           width="18ch"
                         />
                       </div>
                     </div>
                     <div className="notification-telegram-test-row" aria-label="Telegram 测试">
-                      <Button size="1" className="notification-telegram-test-button" variant="soft" onClick={sendTestMessage} disabled={pendingActions.has('test:telegram')}>
+                      <Button size="1" className="notification-telegram-test-button" variant="soft" onClick={sendTestMessage}>
                         <Send size={13} /> Telegram 测试
                       </Button>
                     </div>
@@ -1026,9 +966,7 @@ export default function AdminNotifications() {
                               type="password"
                               value={settings.webhook_secret || ''}
                               onChange={(event) => updateSensitiveWebhookSetting('webhook_secret', event.target.value)}
-                              placeholder={settings.webhook_secret_preview
-                                ? `${settings.webhook_secret_preview}（留空则不修改）`
-                                : (settings.webhook_secret_set === 'true' ? '已保存 Secret，留空则不修改' : '可选')}
+                              placeholder={settings.webhook_secret_set === 'true' ? '已保存 Secret，留空则不修改' : '可选'}
                             />
                           </label>
                         </div>
@@ -1120,9 +1058,7 @@ export default function AdminNotifications() {
                                 type="password"
                                 value={settings.webhook_password || ''}
                                 onChange={(event) => updateSensitiveWebhookSetting('webhook_password', event.target.value)}
-                                placeholder={settings.webhook_password_preview
-                                  ? `${settings.webhook_password_preview}（留空则不修改）`
-                                  : (settings.webhook_password_set === 'true' ? '已保存密码，留空则不修改' : 'password')}
+                                placeholder={settings.webhook_password_set === 'true' ? '已保存密码，留空则不修改' : 'password'}
                               />
                             </label>
                           </div>
@@ -1176,7 +1112,7 @@ export default function AdminNotifications() {
                     const notification = notificationMap.get(client.uuid);
                     const displayIp = clientDisplayIp(client);
                     const enabled = notification?.enable || false;
-                    const gracePeriod = notification?.grace_period || DEFAULT_GRACE_PERIOD_SEC;
+                    const gracePeriod = notification?.grace_period || 180;
                     const lastNotified = notification?.last_notified;
                     const lastNotifiedText = lastNotified
                       ? new Date(lastNotified).getFullYear() < 2000
@@ -1207,7 +1143,6 @@ export default function AdminNotifications() {
                             size="1"
                             checked={enabled}
                             onCheckedChange={(v) => toggleOffline(client.uuid, v)}
-                            disabled={pendingActions.has(`offline:${client.uuid}`)}
                           />
                         </Table.Cell>
                         <Table.Cell>
@@ -1300,7 +1235,6 @@ export default function AdminNotifications() {
                             size="1"
                             checked={enabled}
                             onCheckedChange={(v) => toggleExpiry(client.uuid, v)}
-                            disabled={pendingActions.has(`expiry:${client.uuid}`)}
                           />
                         </Table.Cell>
                         <Table.Cell>
@@ -1365,8 +1299,8 @@ export default function AdminNotifications() {
                         </Text>
                       </Table.Cell>
                       <Table.Cell><Badge variant="soft" size="1">{item.metric || 'cpu'}</Badge></Table.Cell>
-                      <Table.Cell><Text size="2">{item.threshold ?? 80}{loadMetricUnit(item.metric)}</Text></Table.Cell>
-                      <Table.Cell><Text size="2">{((item.ratio ?? 0.8) * 100).toFixed(0)}%</Text></Table.Cell>
+                      <Table.Cell><Text size="2">{item.threshold || 80}%</Text></Table.Cell>
+                      <Table.Cell><Text size="2">{((item.ratio || 0.8) * 100).toFixed(0)}%</Text></Table.Cell>
                       <Table.Cell><Text size="2">{item.interval_min || 15} min</Text></Table.Cell>
                       <Table.Cell>
                         <Badge variant="soft" size="1" color={item.all_clients || !item.clients || item.clients.length === 0 ? 'blue' : 'amber'}>
@@ -1378,7 +1312,7 @@ export default function AdminNotifications() {
                           <Button size="1" variant="soft" onClick={() => openLoadEdit(item)}>
                             <Pencil size={13} /> 编辑
                           </Button>
-                          <Button size="1" variant="soft" color="red" onClick={() => deleteLoadNotification(item.id)} disabled={pendingActions.has(`load:delete:${item.id}`)}>
+                          <Button size="1" variant="soft" color="red" onClick={() => deleteLoadNotification(item.id)}>
                             <Trash2 size={13} /> 删除
                           </Button>
                         </Flex>
@@ -1425,7 +1359,7 @@ export default function AdminNotifications() {
           </Flex>
           <Flex gap="2" justify="end" mt="4">
             <Button variant="soft" color="gray" onClick={() => setEditDialogOpen(false)}>取消</Button>
-            <Button onClick={saveSingleEdit} disabled={pendingActions.has('offline:edit')}>保存</Button>
+            <Button onClick={saveSingleEdit}>保存</Button>
           </Flex>
         </Dialog.Content>
       </Dialog.Root>
@@ -1453,16 +1387,11 @@ export default function AdminNotifications() {
                 onChange={(e) => setBatchForm({ ...batchForm, grace_period: Number(e.target.value) })}
                 mt="1"
               />
-              {batchGraceMixed && (
-                <Text as="p" size="1" color="orange" mt="1">
-                  选中节点当前值不一致，已填入出现最多的值；保存后将统一为该值
-                </Text>
-              )}
             </label>
           </Flex>
           <Flex gap="2" justify="end" mt="4">
             <Button variant="soft" color="gray" onClick={() => setBatchDialogOpen(false)}>取消</Button>
-            <Button onClick={saveBatchEdit} disabled={pendingActions.has('offline:batch')}>保存 ({selectedClients.length} 节点)</Button>
+            <Button onClick={saveBatchEdit}>保存 ({selectedClients.length} 节点)</Button>
           </Flex>
         </Dialog.Content>
       </Dialog.Root>
@@ -1501,7 +1430,7 @@ export default function AdminNotifications() {
           </Flex>
           <Flex gap="2" justify="end" mt="4">
             <Button variant="soft" color="gray" onClick={() => setExpiryEditDialogOpen(false)}>取消</Button>
-            <Button onClick={saveExpirySingleEdit} disabled={pendingActions.has('expiry:edit')}>保存</Button>
+            <Button onClick={saveExpirySingleEdit}>保存</Button>
           </Flex>
         </Dialog.Content>
       </Dialog.Root>
@@ -1531,16 +1460,11 @@ export default function AdminNotifications() {
                 onChange={(e) => setExpiryBatchForm({ ...expiryBatchForm, advance_days: Number(e.target.value) })}
                 mt="1"
               />
-              {expiryBatchDaysMixed && (
-                <Text as="p" size="1" color="orange" mt="1">
-                  选中节点当前值不一致，已填入出现最多的值；保存后将统一为该值
-                </Text>
-              )}
             </label>
           </Flex>
           <Flex gap="2" justify="end" mt="4">
             <Button variant="soft" color="gray" onClick={() => setExpiryBatchDialogOpen(false)}>取消</Button>
-            <Button onClick={saveExpiryBatchEdit} disabled={pendingActions.has('expiry:batch')}>保存 ({selectedClients.length} 节点)</Button>
+            <Button onClick={saveExpiryBatchEdit}>保存 ({selectedClients.length} 节点)</Button>
           </Flex>
         </Dialog.Content>
       </Dialog.Root>
@@ -1571,16 +1495,13 @@ export default function AdminNotifications() {
                   <Select.Item value="temp">温度</Select.Item>
                 </Select.Content>
               </Select.Root>
-              {loadForm.metric === 'disk' && <Text as="p" size="1" color="gray" mt="1">阈值使用节点上报的磁盘占用；容器文件占用估算可能不含快照、隐藏文件等空间。</Text>}
             </label>
             <Flex gap="3">
               <label style={{ flex: 1 }}>
-                <Text size="2" weight="bold">阈值{loadMetricUnit(loadForm.metric) ? ` (${loadMetricUnit(loadForm.metric)})` : ''}</Text>
+                <Text size="2" weight="bold">阈值 (%)</Text>
                 <TextField.Root
                   type="number"
-                  min={0}
-                  step="any"
-                  value={loadForm.threshold ?? 80}
+                  value={loadForm.threshold || 80}
                   onChange={(e) => setLoadForm({ ...loadForm, threshold: Number(e.target.value) })}
                   mt="1"
                 />
@@ -1591,8 +1512,8 @@ export default function AdminNotifications() {
                   type="number"
                   min={0}
                   max={1}
-                  step="any"
-                  value={loadForm.ratio ?? 0.8}
+                  step={0.1}
+                  value={loadForm.ratio || 0.8}
                   onChange={(e) => setLoadForm({ ...loadForm, ratio: Number(e.target.value) })}
                   mt="1"
                 />
@@ -1621,32 +1542,10 @@ export default function AdminNotifications() {
                 <Text size="2" weight="bold">应用到所有服务器</Text>
               </Flex>
             </label>
-            {!loadForm.all_clients && (
-              <fieldset style={{ margin: 0, padding: 12, border: '1px solid var(--gray-6)', borderRadius: 6 }}>
-                <legend>选择服务器（至少一台）</legend>
-                <Flex direction="column" gap="2" style={{ maxHeight: 200, overflowY: 'auto' }}>
-                  {clients.map((client) => (
-                    <label key={client.uuid} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                      <Checkbox
-                        checked={loadForm.clients?.includes(client.uuid) || false}
-                        onCheckedChange={(checked) => setLoadForm((current) => ({
-                          ...current,
-                          clients: checked === true
-                            ? [...new Set([...(current.clients || []), client.uuid])]
-                            : (current.clients || []).filter((uuid) => uuid !== client.uuid),
-                        }))}
-                      />
-                      <Text size="2">{client.name || client.uuid}</Text>
-                    </label>
-                  ))}
-                  {clients.length === 0 && <Text size="2" color="gray">暂无服务器，请先添加服务器</Text>}
-                </Flex>
-              </fieldset>
-            )}
           </Flex>
           <Flex gap="2" justify="end" mt="4">
             <Button variant="soft" color="gray" onClick={() => setLoadDialogOpen(false)}>取消</Button>
-            <Button onClick={saveLoadNotification} disabled={pendingActions.has('load:save')}>{editingLoad ? '保存' : '创建'}</Button>
+            <Button onClick={saveLoadNotification}>{editingLoad ? '保存' : '创建'}</Button>
           </Flex>
         </Dialog.Content>
       </Dialog.Root>

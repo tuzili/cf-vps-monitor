@@ -8,10 +8,8 @@ export type WebsiteMonitorsUpdateDetail = {
   reorder?: number[];
 };
 
-export function notifyWebsiteMonitorsUpdated(_detail?: WebsiteMonitorsUpdateDetail | true) {
-  // Callers can hold private administrator rows. Each tab reloads its own
-  // authorized view; no administrator object belongs in public transport.
-  broadcastCrossTab(WEBSITE_MONITORS_UPDATED_EVENT, true);
+export function notifyWebsiteMonitorsUpdated(detail?: WebsiteMonitorsUpdateDetail | true) {
+  broadcastCrossTab(WEBSITE_MONITORS_UPDATED_EVENT, detail);
 }
 
 export function subscribeWebsiteMonitorsUpdated(

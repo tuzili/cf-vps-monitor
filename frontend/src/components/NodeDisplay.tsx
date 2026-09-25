@@ -25,18 +25,14 @@ interface NodeDisplayProps {
   gridRenderer: (nodes: ClientInfo[], liveData: LiveDataMap) => React.ReactNode;
   offlinePosition?: 'first' | 'keep' | 'last';
   includeHidden?: boolean;
-  loading?: boolean;
-  dataAvailable?: boolean;
 }
 
 export default function NodeDisplay({
   nodes,
   liveData,
   gridRenderer,
-  offlinePosition = 'last',
+  offlinePosition = 'keep',
   includeHidden = false,
-  loading = false,
-  dataAvailable = true,
 }: NodeDisplayProps) {
   const [viewMode, setViewMode] = useState<'grid' | 'table'>(() => {
     return getLocalStorageItem('nodeViewMode') === 'table' ? 'table' : 'grid';
@@ -124,7 +120,7 @@ export default function NodeDisplay({
                 当前结果 {filteredNodes.length}
               </Badge>
               <Badge size="1" variant="soft" color="green">
-                在线 {liveData.statusReady === false ? '—' : onlineVisibleCount}
+                在线 {onlineVisibleCount}
               </Badge>
               <Badge size="1" variant="soft" color="gray">
                 总节点 {nodes.length}
@@ -188,7 +184,7 @@ export default function NodeDisplay({
       {filteredNodes.length === 0 ? (
         <Flex direction="column" align="center" justify="center" style={{ padding: '64px 16px' }}>
           <Text size="4" color="gray">
-            {!dataAvailable ? loading ? '正在加载节点…' : '节点数据不可用' : searchTerm.trim() ? '未找到匹配的节点' : '暂无节点数据'}
+            {searchTerm.trim() ? '未找到匹配的节点' : '暂无节点数据'}
           </Text>
         </Flex>
       ) : (

@@ -1,17 +1,12 @@
 import { clearCachedPublicBootstrap } from './publicBootstrap';
-import { normalizePublicClientPatch, patchCachedPublicBootstrapClients } from './publicBootstrap';
+import { patchCachedPublicBootstrapClients } from './publicBootstrap';
 import { broadcastCrossTab, subscribeCrossTab } from './crossTabEvents';
-import { removeLocalStorageItem } from './browserStorage';
-import { clearCachedPublicSettings } from './publicSettings';
 
 export const PUBLIC_DATA_UPDATED_EVENT = 'cf-monitor:public-data-updated';
 export const PUBLIC_DATA_READY_EVENT = 'cf-monitor:public-data-ready';
 
-// Older versions persisted entire admin updates here; the key is only a transport envelope.
-removeLocalStorageItem(PUBLIC_DATA_UPDATED_EVENT);
-
-const subscribers = new Set<(detail?: PublicDataUpdateDetail) => void>();
-let stopTransport: (() => void) | null = null;
+const EMPTY_UPDATE_SUPPRESS_MS = 10_000;
+let lastDetailedUpdateAt = 0;
 
 export type PublicDataUpdateDetail = {
   force?: boolean;
@@ -22,34 +17,19 @@ export type PublicDataUpdateDetail = {
 };
 
 export function notifyPublicDataUpdated(detail?: PublicDataUpdateDetail) {
-  const safeDetail = sanitizePublicDataUpdate(detail);
-  if (subscribers.size === 0) applyPublicDataUpdate(safeDetail);
-  broadcastCrossTab(PUBLIC_DATA_UPDATED_EVENT, safeDetail);
-}
-
-function applyPublicDataUpdate(detail?: PublicDataUpdateDetail): void {
+  rememberDetailedUpdate(detail);
   if (detail?.clients) patchCachedPublicBootstrapClients(detail);
-  else {
-    clearCachedPublicBootstrap();
-    clearCachedPublicSettings();
-  }
+  else clearCachedPublicBootstrap();
+  broadcastCrossTab(PUBLIC_DATA_UPDATED_EVENT, detail);
 }
 
-function sanitizePublicDataUpdate(detail?: PublicDataUpdateDetail): PublicDataUpdateDetail | undefined {
-  if (!detail) return undefined;
-  if (!detail.clients) return detail.force ? { force: true } : undefined;
-  const remove = new Set((Array.isArray(detail.clients.remove) ? detail.clients.remove : [])
-    .filter((uuid): uuid is string => typeof uuid === 'string' && uuid.trim() !== ''));
-  const upsert = [];
-  for (const raw of Array.isArray(detail.clients.upsert) ? detail.clients.upsert : []) {
-    const client = normalizePublicClientPatch(raw);
-    if (!client) continue;
-    // Consumers have different visibility: refresh their own authorized view
-    // instead of sending hidden metadata or removing it from an admin's list.
-    if (client.hidden) return { force: true };
-    upsert.push(client);
-  }
-  return { ...(detail.force ? { force: true } : {}), clients: { upsert, remove: [...remove] } };
+function rememberDetailedUpdate(detail?: PublicDataUpdateDetail) {
+  if (detail?.clients) lastDetailedUpdateAt = Date.now();
+}
+
+function shouldIgnoreEmptyUpdate(detail?: PublicDataUpdateDetail): boolean {
+  if (detail?.force) return false;
+  return !detail?.clients && Date.now() - lastDetailedUpdateAt < EMPTY_UPDATE_SUPPRESS_MS;
 }
 
 export function notifyPublicDataReady() {
@@ -57,17 +37,9 @@ export function notifyPublicDataReady() {
 }
 
 export function subscribePublicDataUpdated(callback: (detail?: PublicDataUpdateDetail) => void) {
-  subscribers.add(callback);
-  if (!stopTransport) {
-    stopTransport = subscribeCrossTab(PUBLIC_DATA_UPDATED_EVENT, (raw) => {
-      const detail = sanitizePublicDataUpdate(raw as PublicDataUpdateDetail | undefined);
-      // Invalidate once before all consumers fetch, so their requests can coalesce.
-      applyPublicDataUpdate(detail);
-      for (const subscriber of [...subscribers]) subscriber(detail);
-    });
-  }
-  return () => {
-    subscribers.delete(callback);
-    if (subscribers.size === 0) { stopTransport?.(); stopTransport = null; }
-  };
+  return subscribeCrossTab(PUBLIC_DATA_UPDATED_EVENT, (raw) => {
+    const detail = raw as PublicDataUpdateDetail | undefined;
+    rememberDetailedUpdate(detail);
+    if (!shouldIgnoreEmptyUpdate(detail)) callback(detail);
+  });
 }

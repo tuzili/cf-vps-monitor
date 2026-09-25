@@ -10,8 +10,7 @@ import { CF_MONITOR_GITHUB_URL } from "../utils/projectLinks";
 import { fetchPublicSettings } from "../utils/publicSettings";
 import { subscribePublicDataUpdated } from "../utils/publicDataEvents";
 import { subscribeThemeUpdated } from "../utils/themeEvents";
-import { ensureActiveThemeStylesheet, refreshActiveThemeStylesheet, removeActiveThemeStylesheet } from "../utils/activeThemeStylesheet";
-import { useIsMobile } from "../hooks/useIsMobile";
+import { refreshActiveThemeStylesheet } from "../utils/activeThemeStylesheet";
 
 function safeBackgroundUrl(value: unknown) {
   const raw = typeof value === "string" ? value.trim() : "";
@@ -41,7 +40,6 @@ function safeLogoUrl(value: unknown) {
 }
 
 export default function Layout() {
-  const isMobile = useIsMobile();
   const { theme, setTheme } = useTheme();
   const { displayTheme, setDisplayThemeFromSettings, toggleDisplayTheme } = useDisplayTheme();
   const location = useLocation();
@@ -55,23 +53,22 @@ export default function Layout() {
   const [mainContentWidth, setMainContentWidth] = useState(100);
 
   useEffect(() => {
-    let cancelled = false;
-    let settingsRequest = 0;
-    ensureActiveThemeStylesheet();
-    const applyPublicSettings = (forceTheme = false) => {
-      const request = ++settingsRequest;
-      refreshActiveThemeStylesheet({ force: forceTheme });
+    const applyPublicSettings = () => {
+      refreshActiveThemeStylesheet();
       fetchPublicSettings({ force: true })
       .then((data) => {
-        if (cancelled || request !== settingsRequest) return;
         if (data.site_title) {
           setSiteTitle(data.site_title);
           document.title = data.site_title;
         }
-        setSiteSubtitle(typeof data.site_subtitle === "string" && data.site_subtitle.trim() ? data.site_subtitle : null);
+        if (typeof data.site_subtitle === "string" && data.site_subtitle.trim()) {
+          setSiteSubtitle(data.site_subtitle);
+        }
         setSiteLogoUrl(safeLogoUrl(data.site_logo_url));
-        setBgUrlDesktop(safeBackgroundUrl(data.theme_settings?.backgroundImageUrlDesktop));
-        setBgUrlMobile(safeBackgroundUrl(data.theme_settings?.backgroundImageUrlMobile));
+        if (data.theme_settings?.backgroundImageUrlDesktop)
+          setBgUrlDesktop(safeBackgroundUrl(data.theme_settings.backgroundImageUrlDesktop));
+        if (data.theme_settings?.backgroundImageUrlMobile)
+          setBgUrlMobile(safeBackgroundUrl(data.theme_settings.backgroundImageUrlMobile));
         if (data.theme_settings?.mainContentWidth)
           setMainContentWidth(data.theme_settings.mainContentWidth);
         if (!hasLocalDisplayThemePreference()) {
@@ -81,14 +78,12 @@ export default function Layout() {
       .catch(() => {});
     };
 
-    applyPublicSettings(true);
-    const unsubscribeTheme = subscribeThemeUpdated(() => applyPublicSettings(true));
-    const unsubscribePublicData = subscribePublicDataUpdated(() => applyPublicSettings());
+    applyPublicSettings();
+    const unsubscribeTheme = subscribeThemeUpdated(applyPublicSettings);
+    const unsubscribePublicData = subscribePublicDataUpdated(applyPublicSettings);
     return () => {
-      cancelled = true;
       unsubscribeTheme();
       unsubscribePublicData();
-      removeActiveThemeStylesheet();
     };
   }, [setDisplayThemeFromSettings]);
 
@@ -112,7 +107,7 @@ export default function Layout() {
   const nextDisplayTheme = displayThemeLabels[getNextDisplayTheme(displayTheme)];
   const nextThemeLabel =
     theme === "light" ? "切换成深色模式" : theme === "dark" ? "切换成跟随系统" : "切换成浅色模式";
-  const bgUrl = isMobile ? (bgUrlMobile || bgUrlDesktop) : (bgUrlDesktop || bgUrlMobile);
+  const bgUrl = bgUrlDesktop || bgUrlMobile;
   const contentWidth = mainContentWidth >= 100 ? "100%" : `${mainContentWidth}vw`;
   const monitorMode = new URLSearchParams(location.search).get("view") === "websites" ? "websites" : "servers";
   const setMonitorMode = (value: string) => {

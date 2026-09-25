@@ -1,5 +1,3 @@
-import { scheduledFetch } from './scheduled-budget.ts';
-
 export const TELEGRAM_MESSAGE_MAX_CHARS = 4096;
 export const TELEGRAM_FETCH_TIMEOUT_MS = 5000;
 
@@ -25,7 +23,7 @@ export async function sendTelegramMessage(botToken: string, payload: TelegramSen
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), TELEGRAM_FETCH_TIMEOUT_MS);
   try {
-    return await scheduledFetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
+    return await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),

@@ -2,8 +2,8 @@
  * Reusable SettingCard components for admin forms.
  * Provides collapsible sections with consistent styling
  */
-import React, { useId, useState } from 'react';
-import { Card, Flex, Text, Switch, TextField, TextArea } from '@radix-ui/themes';
+import React, { useState } from 'react';
+import { Card, Flex, Text, Switch, TextField, TextArea, IconButton } from '@radix-ui/themes';
 import { ChevronDown, ChevronRight } from 'lucide-react';
 
 /* ========== Collapsible SettingCard ========== */
@@ -24,7 +24,6 @@ export function SettingCard({
   open: controlledOpen,
   onOpenChange,
 }: SettingCardProps) {
-  const contentId = useId();
   const [internalOpen, setInternalOpen] = useState(defaultOpen);
   const isControlled = controlledOpen !== undefined;
   const open = isControlled ? controlledOpen : internalOpen;
@@ -41,23 +40,25 @@ export function SettingCard({
 
   return (
     <Card style={{ marginBottom: 12 }}>
-      <button
-        type="button"
-        className="setting-card-toggle"
-        aria-label={title}
-        aria-expanded={open}
-        aria-controls={contentId}
+      <Flex
+        align="center"
+        justify="between"
+        style={{ cursor: 'pointer', userSelect: 'none' }}
         onClick={toggle}
       >
         <Flex direction="column">
           <Text size="3" weight="bold">{title}</Text>
           {description && <Text size="1" color="gray">{description}</Text>}
         </Flex>
-        {open ? <ChevronDown size={16} aria-hidden="true" /> : <ChevronRight size={16} aria-hidden="true" />}
-      </button>
-        <div id={contentId} hidden={!open} style={{ marginTop: 12, paddingTop: 12, borderTop: '1px solid var(--gray-4)' }}>
+        <IconButton variant="ghost" size="1">
+          {open ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
+        </IconButton>
+      </Flex>
+      {open && (
+        <div style={{ marginTop: 12, paddingTop: 12, borderTop: '1px solid var(--gray-4)' }}>
           {children}
         </div>
+      )}
     </Card>
   );
 }
@@ -67,15 +68,14 @@ interface SettingRowProps {
   label: string;
   description?: string;
   children: React.ReactNode;
-  controlId?: string;
 }
 
-export function SettingRow({ label, description, children, controlId }: SettingRowProps) {
+export function SettingRow({ label, description, children }: SettingRowProps) {
   return (
     <Flex justify="between" align="center" style={{ padding: '8px 0' }}>
       <Flex direction="column" style={{ flex: 1, minWidth: 0 }}>
-        {controlId ? <label htmlFor={controlId}><Text size="2" weight="medium">{label}</Text></label> : <Text size="2" weight="medium">{label}</Text>}
-        {description && <Text id={controlId ? `${controlId}-description` : undefined} size="1" color="gray">{description}</Text>}
+        <Text size="2" weight="medium">{label}</Text>
+        {description && <Text size="1" color="gray">{description}</Text>}
       </Flex>
       <div style={{ flexShrink: 0, marginLeft: 16 }}>{children}</div>
     </Flex>
@@ -91,10 +91,9 @@ interface SettingToggleProps {
 }
 
 export function SettingToggle({ label, description, checked, onCheckedChange }: SettingToggleProps) {
-  const id = useId();
   return (
-    <SettingRow label={label} description={description} controlId={id}>
-      <Switch id={id} aria-describedby={description ? `${id}-description` : undefined} checked={checked} onCheckedChange={onCheckedChange} />
+    <SettingRow label={label} description={description}>
+      <Switch checked={checked} onCheckedChange={onCheckedChange} />
     </SettingRow>
   );
 }
@@ -111,16 +110,13 @@ interface SettingInputProps {
 }
 
 export function SettingInput({ label, description, value, onChange, type, placeholder, width }: SettingInputProps) {
-  const id = useId();
   const inputWidth = width || (type === 'number' ? 180 : type === 'password' ? 360 : 420);
 
   return (
     <div style={{ marginBottom: 12 }}>
-      <label htmlFor={id} style={{ display: 'block', marginBottom: 4 }}><Text size="2" weight="medium">{label}</Text></label>
-      {description && <Text id={`${id}-description`} size="1" color="gray" style={{ display: 'block', marginBottom: 6 }}>{description}</Text>}
+      <Text size="2" weight="medium" style={{ display: 'block', marginBottom: 4 }}>{label}</Text>
+      {description && <Text size="1" color="gray" style={{ display: 'block', marginBottom: 6 }}>{description}</Text>}
       <TextField.Root
-        id={id}
-        aria-describedby={description ? `${id}-description` : undefined}
         size="2"
         style={{ width: inputWidth, maxWidth: '100%' }}
         value={value}
@@ -143,14 +139,11 @@ interface SettingTextareaProps {
 }
 
 export function SettingTextarea({ label, description, value, onChange, rows, placeholder }: SettingTextareaProps) {
-  const id = useId();
   return (
     <div style={{ marginBottom: 12 }}>
-      <label htmlFor={id} style={{ display: 'block', marginBottom: 4 }}><Text size="2" weight="medium">{label}</Text></label>
-      {description && <Text id={`${id}-description`} size="1" color="gray" style={{ display: 'block', marginBottom: 6 }}>{description}</Text>}
+      <Text size="2" weight="medium" style={{ display: 'block', marginBottom: 4 }}>{label}</Text>
+      {description && <Text size="1" color="gray" style={{ display: 'block', marginBottom: 6 }}>{description}</Text>}
       <TextArea
-        id={id}
-        aria-describedby={description ? `${id}-description` : undefined}
         style={{ width: 'min(720px, 100%)' }}
         value={value}
         onChange={e => onChange(e.target.value)}

@@ -9,8 +9,7 @@ import UsageBar from './UsageBar';
 import Flag from './Flag';
 import MiniPingChart from './MiniPingChart';
 import PriceTags from './PriceTags';
-import { diskUsagePresentation, formatMetricBytes, formatMetricSpeed, formatMetricUptime, formatLastReport, getNodeDisplayRecord, getNodeLastReportTime, getNodeStatus, metricNumber, resourceTotal, resourceUsage, type NodeStatus } from '../utils/nodeMetrics';
-import { comparePublicClients } from '../utils/publicClients';
+import { formatBytes, formatPercent, formatSpeed, formatUptime } from '../utils/format';
 import { getOSImage, getOSName } from '../utils/osIcon';
 import { ClientInfo, LiveDataMap, LiveRecord } from '../types';
 import { formatCpuSpec } from '../utils/cpuFormat';
@@ -24,9 +23,8 @@ interface NodeTableProps {
 type SortKey = 'manual' | 'name' | 'os' | 'status' | 'cpu' | 'ram' | 'disk' | 'network' | 'price' | 'traffic';
 type SortDir = 'asc' | 'desc';
 
-function formatUptimeZh(seconds?: number | null): string {
-  if (metricNumber(seconds) === null) return '—';
-  seconds = seconds as number;
+function formatUptimeZh(seconds?: number): string {
+  if (!seconds || seconds < 0) return '-';
   const d = Math.floor(seconds / 86400);
   const h = Math.floor((seconds % 86400) / 3600);
   const m = Math.floor((seconds % 3600) / 60);
@@ -37,6 +35,20 @@ function formatUptimeZh(seconds?: number | null): string {
   if (m) parts.push(`${m} 分`);
   if (s || parts.length === 0) parts.push(`${s} 秒`);
   return parts.join(' ');
+}
+
+function formatLastReport(timestamp?: number): string {
+  if (!timestamp || !Number.isFinite(timestamp)) return '-';
+  const ms = timestamp < 1_000_000_000_000 ? timestamp * 1000 : timestamp;
+  const date = new Date(ms);
+  if (Number.isNaN(date.getTime())) return '-';
+  return date.toLocaleString('zh-CN', {
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  });
 }
 
 function DetailRow({ label, value }: { label: string; value: React.ReactNode }) {
@@ -98,6 +110,12 @@ function RemarkDetailRow({ value }: { value?: string }) {
   );
 }
 
+function getSortOrder(node: ClientInfo) {
+  return typeof node.sort_order === 'number' && Number.isFinite(node.sort_order)
+    ? node.sort_order
+    : Number.MAX_SAFE_INTEGER;
+}
+
 function formatSupport(supported?: boolean, sourceValue?: string) {
   return supported || Boolean(sourceValue) ? '支持' : '不支持';
 }
@@ -106,13 +124,11 @@ function ExpandedNodeDetails({
   node,
   live,
   lastReportTime,
-  status,
   includeHidden = false,
 }: {
   node: ClientInfo;
-  live?: Partial<LiveRecord>;
+  live?: LiveRecord;
   lastReportTime?: number;
-  status: NodeStatus;
   includeHidden?: boolean;
 }) {
   return (
@@ -131,10 +147,9 @@ function ExpandedNodeDetails({
         <div className="node-table-detail-sections">
           <DetailSection title="资源规格">
             <DetailRow label="CPU" value={formatCpuSpec(node.cpu_name, node.cpu_cores)} />
-            <DetailRow label="内存" value={formatMetricBytes(resourceTotal(live?.ram_total, node.mem_total))} />
-            <DetailRow label="交换" value={formatMetricBytes(live?.swap_total ?? node.swap_total)} />
-            <DetailRow label="磁盘" value={diskUsagePresentation(live, node.disk_total).detail} />
-            {diskUsagePresentation(live).estimated && <DetailRow label="文件占用估算" value={diskUsagePresentation(live).sampleLabel} />}
+            <DetailRow label="内存" value={formatBytes(node.mem_total || live?.ram_total || 0)} />
+            <DetailRow label="交换" value={formatBytes(node.swap_total || live?.swap_total || 0)} />
+            <DetailRow label="磁盘" value={formatBytes(node.disk_total || live?.disk_total || 0)} />
           </DetailSection>
 
           <DetailSection title="系统环境">
@@ -153,19 +168,19 @@ function ExpandedNodeDetails({
 
           <DetailSection title="网络与流量">
             <DetailRow
-              label={status === 'offline' ? '上报时网速' : '当前速率'}
-              value={`↑ ${formatMetricSpeed(live?.net_out)} ↓ ${formatMetricSpeed(live?.net_in)}`}
+              label="当前速率"
+              value={`↑ ${formatSpeed(live?.net_out || 0)} ↓ ${formatSpeed(live?.net_in || 0)}`}
             />
             <DetailRow
-              label="流量"
-              value={`↑ ${formatMetricBytes(live?.net_total_up)} ↓ ${formatMetricBytes(live?.net_total_down)}`}
+              label="总流量"
+              value={`↑ ${formatBytes(live?.net_total_up || 0)} ↓ ${formatBytes(live?.net_total_down || 0)}`}
             />
             <DetailRow label="IPv4" value={formatSupport(node.has_ipv4, node.ipv4)} />
             <DetailRow label="IPv6" value={formatSupport(node.has_ipv6, node.ipv6)} />
           </DetailSection>
 
           <DetailSection title="运行状态">
-            <DetailRow label={status === 'offline' ? '上报时已运行' : '运行时间'} value={formatUptimeZh(live?.uptime)} />
+            <DetailRow label="运行时间" value={formatUptimeZh(live?.uptime)} />
             <DetailRow label="最后上报" value={formatLastReport(lastReportTime)} />
             <DetailRow label="地区" value={node.region || '-'} />
             <RemarkDetailRow value={node.public_remark} />
@@ -180,29 +195,19 @@ function ExpandedNodeDetails({
   );
 }
 
-function SortHeader({ column, children, style, activeKey, direction, onSort }: {
-  column: SortKey;
-  children: React.ReactNode;
-  style?: React.CSSProperties;
-  activeKey: SortKey;
-  direction: SortDir;
-  onSort: (column: SortKey) => void;
-}) {
-  return (
-    <Table.ColumnHeaderCell style={{ whiteSpace: 'nowrap', ...style }} aria-sort={activeKey === column ? (direction === 'asc' ? 'ascending' : 'descending') : 'none'}>
-      <button type="button" className="node-table-sort-button" onClick={() => onSort(column)}>
-        {children}
-        {activeKey !== column ? <ChevronsUpDown size={12} style={{ opacity: 0.35 }} aria-hidden="true" /> : direction === 'asc' ? <ArrowUp size={12} aria-hidden="true" /> : <ArrowDown size={12} aria-hidden="true" />}
-      </button>
-    </Table.ColumnHeaderCell>
-  );
-}
-
 export default function NodeTable({ nodes, liveData, includeHidden = false }: NodeTableProps) {
   const [sortKey, setSortKey] = useState<SortKey>('manual');
   const [sortDir, setSortDir] = useState<SortDir>('asc');
   const [expandedRows, setExpandedRows] = useState<string[]>([]);
   const onlineSet = useMemo(() => new Set(liveData?.online || []), [liveData?.online]);
+  const lastReportMap = useMemo(() => {
+    const map = new Map<string, number>();
+    (liveData.clients || []).forEach((client) => {
+      if (client.uuid && client.lastReportTime) map.set(client.uuid, client.lastReportTime);
+    });
+    return map;
+  }, [liveData.clients]);
+
   const handleSort = (key: SortKey) => {
     if (sortKey === key) {
       setSortDir(sortDir === 'asc' ? 'desc' : 'asc');
@@ -213,21 +218,22 @@ export default function NodeTable({ nodes, liveData, includeHidden = false }: No
     setSortDir('asc');
   };
 
-  const sortHeaderProps = { activeKey: sortKey, direction: sortDir, onSort: handleSort };
+  const SortIcon = ({ column }: { column: SortKey }) => {
+    if (sortKey !== column) return <ChevronsUpDown size={12} style={{ opacity: 0.35 }} />;
+    return sortDir === 'asc' ? <ArrowUp size={12} /> : <ArrowDown size={12} />;
+  };
 
   const sortedNodes = useMemo(() => {
     return [...nodes].sort((a, b) => {
       const aOnline = onlineSet.has(a.uuid);
       const bOnline = onlineSet.has(b.uuid);
-      if (liveData.statusReady !== false && aOnline !== bOnline) return aOnline ? -1 : 1;
-      const aLive = getNodeDisplayRecord(a.uuid, liveData);
-      const bLive = getNodeDisplayRecord(b.uuid, liveData);
+      const aLive = liveData?.data?.[a.uuid];
+      const bLive = liveData?.data?.[b.uuid];
 
       let cmp = 0;
-      let metrics: [unknown, unknown] | undefined;
       switch (sortKey) {
         case 'manual':
-          cmp = comparePublicClients(a, b);
+          cmp = getSortOrder(a) - getSortOrder(b);
           break;
         case 'name':
           cmp = (a.name || '').localeCompare(b.name || '');
@@ -236,16 +242,16 @@ export default function NodeTable({ nodes, liveData, includeHidden = false }: No
           cmp = (a.os || '').localeCompare(b.os || '');
           break;
         case 'status':
-          cmp = 0;
+          cmp = Number(bOnline) - Number(aOnline);
           break;
         case 'cpu':
-          metrics = [aLive?.cpu, bLive?.cpu];
+          cmp = (aLive?.cpu || 0) - (bLive?.cpu || 0);
           break;
         case 'ram':
-          metrics = [resourceUsage(aLive?.ram, aLive?.ram_total, a.mem_total).percent, resourceUsage(bLive?.ram, bLive?.ram_total, b.mem_total).percent];
+          cmp = formatPercent(aLive?.ram || 0, a.mem_total) - formatPercent(bLive?.ram || 0, b.mem_total);
           break;
         case 'disk':
-          metrics = [resourceUsage(aLive?.disk, aLive?.disk_total, a.disk_total).percent, resourceUsage(bLive?.disk, bLive?.disk_total, b.disk_total).percent];
+          cmp = formatPercent(aLive?.disk || 0, a.disk_total) - formatPercent(bLive?.disk || 0, b.disk_total);
           break;
         case 'network':
           cmp = ((aLive?.net_in || 0) + (aLive?.net_out || 0)) - ((bLive?.net_in || 0) + (bLive?.net_out || 0));
@@ -258,13 +264,7 @@ export default function NodeTable({ nodes, liveData, includeHidden = false }: No
           break;
       }
 
-      if (metrics) {
-        const [aValue, bValue] = metrics.map(metricNumber);
-        if (aValue === null || bValue === null) {
-          if (aValue !== bValue) return aValue === null ? 1 : -1;
-        } else cmp = aValue - bValue;
-      }
-      return (sortDir === 'asc' ? cmp : -cmp) || comparePublicClients(a, b);
+      return sortDir === 'asc' ? cmp : -cmp;
     });
   }, [nodes, sortKey, sortDir, liveData, onlineSet]);
 
@@ -275,6 +275,26 @@ export default function NodeTable({ nodes, liveData, includeHidden = false }: No
         : [...current, uuid],
     );
   };
+
+  const SortHeader = ({
+    column,
+    children,
+    style,
+  }: {
+    column: SortKey;
+    children: React.ReactNode;
+    style?: React.CSSProperties;
+  }) => (
+    <Table.ColumnHeaderCell
+      style={{ cursor: 'pointer', whiteSpace: 'nowrap', ...style }}
+      onClick={() => handleSort(column)}
+    >
+      <Flex align="center" gap="1">
+        {children}
+        <SortIcon column={column} />
+      </Flex>
+    </Table.ColumnHeaderCell>
+  );
 
   return (
     <Box className="node-table-scroll">
@@ -287,29 +307,27 @@ export default function NodeTable({ nodes, liveData, includeHidden = false }: No
         <Table.Header>
           <Table.Row>
             <Table.ColumnHeaderCell style={{ width: 36 }} />
-            <SortHeader {...sortHeaderProps} column="name" style={{ width: 180 }}>名称</SortHeader>
-            <SortHeader {...sortHeaderProps} column="os" style={{ width: 132 }}>系统</SortHeader>
-            <SortHeader {...sortHeaderProps} column="status" style={{ width: 136 }}>状态</SortHeader>
-            <SortHeader {...sortHeaderProps} column="cpu" style={{ width: 118 }}>CPU</SortHeader>
-            <SortHeader {...sortHeaderProps} column="ram" style={{ width: 118 }}>内存</SortHeader>
-            <SortHeader {...sortHeaderProps} column="disk" style={{ width: 118 }}>硬盘</SortHeader>
-            <SortHeader {...sortHeaderProps} column="network" style={{ width: 142 }}>网络</SortHeader>
-            <SortHeader {...sortHeaderProps} column="price" style={{ width: 108 }}>价格</SortHeader>
-            <SortHeader {...sortHeaderProps} column="traffic" style={{ width: 166 }}>流量</SortHeader>
+            <SortHeader column="name" style={{ width: 180 }}>名称</SortHeader>
+            <SortHeader column="os" style={{ width: 132 }}>系统</SortHeader>
+            <SortHeader column="status" style={{ width: 136 }}>状态</SortHeader>
+            <SortHeader column="cpu" style={{ width: 118 }}>CPU</SortHeader>
+            <SortHeader column="ram" style={{ width: 118 }}>内存</SortHeader>
+            <SortHeader column="disk" style={{ width: 118 }}>硬盘</SortHeader>
+            <SortHeader column="network" style={{ width: 142 }}>网络</SortHeader>
+            <SortHeader column="price" style={{ width: 108 }}>价格</SortHeader>
+            <SortHeader column="traffic" style={{ width: 166 }}>流量</SortHeader>
           </Table.Row>
         </Table.Header>
 
         <Table.Body>
           {sortedNodes.map((node) => {
             const isOnline = onlineSet.has(node.uuid);
-            const status = getNodeStatus(node.uuid, liveData);
-            const live = getNodeDisplayRecord(node.uuid, liveData);
-            const cpuVal = metricNumber(live?.cpu);
-            const ramPct = resourceUsage(live?.ram, live?.ram_total, node.mem_total).percent;
-            const disk = diskUsagePresentation(live, node.disk_total);
-            const diskPct = disk.percent;
+            const live = liveData?.data?.[node.uuid];
+            const cpuVal = live?.cpu || 0;
+            const ramPct = formatPercent(live?.ram || 0, node.mem_total);
+            const diskPct = formatPercent(live?.disk || 0, node.disk_total);
             const isExpanded = expandedRows.includes(node.uuid);
-            const uptimeLabel = formatMetricUptime(live?.uptime);
+            const uptimeLabel = formatUptime(live?.uptime || 0);
 
             return (
               <React.Fragment key={node.uuid}>
@@ -333,7 +351,7 @@ export default function NodeTable({ nodes, liveData, includeHidden = false }: No
                     <Link
                       to={`/instance/${node.uuid}`}
                       style={{ textDecoration: 'none', color: 'inherit' }}
-                      onClick={(event: React.MouseEvent<HTMLAnchorElement>) => event.stopPropagation()}
+                      onClick={(event) => event.stopPropagation()}
                     >
                       <Flex className="node-table-name-cell" align="center" gap="2">
                         <Flag region={node.region} size={16} />
@@ -352,38 +370,37 @@ export default function NodeTable({ nodes, liveData, includeHidden = false }: No
                   </Table.Cell>
                   <Table.Cell className="node-table-status-cell">
                     <Flex className="node-table-status-stack" gap="1" align="center">
-                      <Badge color={status === 'online' ? 'green' : status === 'offline' ? 'red' : 'gray'} variant="soft" size="1">
-                        {status === 'online' ? '在线' : status === 'offline' ? '离线' : '确认中'}
+                      <Badge color={isOnline ? 'green' : 'red'} variant="soft" size="1">
+                        {isOnline ? '在线' : '离线'}
                       </Badge>
                       {isOnline && (
                         <Text size="1" color="gray" className="node-uptime-nowrap" title={uptimeLabel}>
                           {uptimeLabel}
                         </Text>
                       )}
-                      {status === 'offline' && <Text size="1" color="gray" title="以下指标为最后一次上报状态">最后上报 {formatLastReport(getNodeLastReportTime(node.uuid, liveData))}</Text>}
                     </Flex>
                   </Table.Cell>
                   <Table.Cell>
                     <Box className="node-table-resource-cell">
-                      {cpuVal !== null && <UsageBar value={cpuVal} showLabel={false} />}
-                      <Text size="1" color="gray">{cpuVal === null ? '—' : `${cpuVal.toFixed(1)}%`}</Text>
+                      <UsageBar value={cpuVal} showLabel={false} />
+                      <Text size="1" color="gray">{cpuVal.toFixed(1)}%</Text>
                     </Box>
                   </Table.Cell>
                   <Table.Cell>
                     <Box className="node-table-resource-cell">
-                      {ramPct !== null && <UsageBar value={ramPct} showLabel={false} />}
-                      <Text size="1" color="gray">{ramPct === null ? '—' : `${ramPct.toFixed(1)}%`}</Text>
+                      <UsageBar value={ramPct} showLabel={false} />
+                      <Text size="1" color="gray">{ramPct.toFixed(1)}%</Text>
                     </Box>
                   </Table.Cell>
                   <Table.Cell>
                     <Box className="node-table-resource-cell">
-                      {diskPct !== null && <UsageBar value={diskPct} showLabel={false} />}
-                      <Text size="1" color="gray" title={disk.estimated ? `${disk.detail}；${disk.description} ${disk.sampleLabel}` : diskPct === null ? '磁盘使用量或容量未提供' : undefined}>{diskPct === null ? '—' : `${disk.estimated ? '≈ ' : ''}${diskPct.toFixed(1)}%`}</Text>
+                      <UsageBar value={diskPct} showLabel={false} />
+                      <Text size="1" color="gray">{diskPct.toFixed(1)}%</Text>
                     </Box>
                   </Table.Cell>
                   <Table.Cell>
                     <Text size="2" style={{ whiteSpace: 'nowrap' }}>
-                      ↑ {formatMetricSpeed(live?.net_out)} ↓ {formatMetricSpeed(live?.net_in)}
+                      ↑ {formatSpeed(live?.net_out || 0)} ↓ {formatSpeed(live?.net_in || 0)}
                     </Text>
                   </Table.Cell>
                   <Table.Cell>
@@ -401,7 +418,7 @@ export default function NodeTable({ nodes, liveData, includeHidden = false }: No
                   </Table.Cell>
                   <Table.Cell>
                     <Text size="2" style={{ whiteSpace: 'nowrap' }}>
-                      ↑ {formatMetricBytes(live?.net_total_up)} ↓ {formatMetricBytes(live?.net_total_down)}
+                      ↑ {formatBytes(live?.net_total_up || 0)} ↓ {formatBytes(live?.net_total_down || 0)}
                     </Text>
                   </Table.Cell>
                 </Table.Row>
@@ -412,8 +429,7 @@ export default function NodeTable({ nodes, liveData, includeHidden = false }: No
                       <ExpandedNodeDetails
                         node={node}
                         live={live}
-                        lastReportTime={getNodeLastReportTime(node.uuid, liveData)}
-                        status={status}
+                        lastReportTime={lastReportMap.get(node.uuid)}
                         includeHidden={includeHidden}
                       />
                     </Table.Cell>

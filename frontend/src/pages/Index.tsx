@@ -11,10 +11,10 @@ import {
   defaultStatusCardVisibility,
   StatusCardKey,
 } from '../utils/dashboardStatus';
-import { fetchPublicBootstrap } from '../utils/publicBootstrap';
+import { clearCachedPublicBootstrap, fetchPublicBootstrap, getCachedPublicBootstrap } from '../utils/publicBootstrap';
 import { mergePublicClientPatch, normalizePublicClients } from '../utils/publicClients';
 import { fetchWithBootstrapRetry } from '../utils/api';
-import { getNodeDisplayRecord, getNodeLastReportTime, getNodeStatus } from '../utils/nodeMetrics';
+import { getLocalStorageItem } from '../utils/browserStorage';
 import WebsiteMonitorList, { WebsiteMonitorSummary } from '../components/WebsiteMonitorList';
 import { subscribeWebsiteMonitorsUpdated, type WebsiteMonitorsUpdateDetail } from '../utils/websiteMonitorEvents';
 import { notifyPublicDataReady, subscribePublicDataUpdated } from '../utils/publicDataEvents';
@@ -28,6 +28,8 @@ type StatusCardsVisibility = Record<StatusCardKey, boolean>;
 
 const fallbackVisibility: StatusCardsVisibility = { ...defaultStatusCardVisibility };
 
+type OfflinePosition = 'first' | 'keep' | 'last';
+
 export const nodeCardGridTemplateColumns = 'repeat(auto-fill, 320px)';
 export const mobileNodeCardGridTemplateColumns = '1fr';
 
@@ -38,12 +40,44 @@ const nodeCardGridStyle = {
 const WEBSITE_MONITOR_REFRESH_MS = 120_000;
 const WEBSITE_MONITOR_PERIODS = [1, 24, 72] as const;
 
+function loadOfflinePosition(): OfflinePosition {
+  const saved = getLocalStorageItem('offlineServerPosition');
+  if (saved === 'first' || saved === 'keep' || saved === 'last') return saved;
+  return 'keep';
+}
+
 const statusIconByKey: Record<StatusCardKey, React.ReactNode> = {
   currentOnline: <RadioTower size={18} />,
   regionOverview: <Globe2 size={18} />,
   trafficOverview: <UploadCloud size={18} />,
   networkSpeed: <Signal size={18} />,
 };
+
+function liveClientsAsPublicClients(liveClients: LiveDataMap['clients'] = []): ClientInfo[] {
+  return liveClients
+    .filter((client): client is NonNullable<LiveDataMap['clients']>[number] => Boolean(client?.uuid))
+    .map((client) => ({
+      uuid: client.uuid,
+      name: client.name || client.uuid,
+      cpu_name: '',
+      cpu_cores: 0,
+      os: '',
+      arch: '',
+      region: client.region || '',
+      mem_total: 0,
+      swap_total: 0,
+      disk_total: 0,
+      group: '',
+      tags: '',
+      hidden: false,
+      price: 0,
+      billing_cycle: 0,
+      currency: '',
+      expired_at: '',
+      traffic_limit: 0,
+      traffic_limit_type: '',
+    }));
+}
 
 function mergeLiveClientMetadata(clients: ClientInfo[], liveClients: LiveDataMap['clients'] = []): ClientInfo[] {
   const liveByUuid = new Map((liveClients || []).map((client) => [client.uuid, client]));
@@ -66,15 +100,15 @@ function readWebsiteHidden(value: unknown): boolean {
 
 function normalizeWebsiteSummary(input: unknown, options: { includeHidden?: boolean } = {}): WebsiteMonitorSummary | null {
   if (!input || typeof input !== 'object') return null;
-  const value = input as Partial<WebsiteMonitorSummary> & { hidden?: unknown; hide_url?: unknown };
+  const value = input as Partial<WebsiteMonitorSummary> & { hidden?: unknown };
   const id = Number(value.id);
   const hidden = readWebsiteHidden(value.hidden);
   if (!Number.isInteger(id) || id <= 0 || (!options.includeHidden && hidden)) return null;
   return {
     id,
     name: String(value.name || ''),
-    // Also defend against older tabs that still publish administrator rows.
-    url: (!options.includeHidden && readWebsiteHidden(value.hide_url)) || value.url == null ? null : String(value.url),
+    // 服务端对游客隐藏地址时返回 null；此处必须保留 null，不能兜底成空串以外的值
+    url: value.url == null ? null : String(value.url),
     method: value.method === 'TCP' || value.method === 'HEAD' || value.method === 'GET' ? value.method : undefined,
     interval_sec: typeof value.interval_sec === 'number' ? value.interval_sec : 120,
     status: value.status === 'up' || value.status === 'down' || value.status === 'paused' ? value.status : 'pending',
@@ -197,16 +231,17 @@ export function ApiUnavailableNotice({ error }: { error: string }) {
 export default function Index() {
   const location = useLocation();
   const { authLoading, isAuthenticated } = useAuth();
-  const { liveData, error, snapshotReady, clientMetadata: clients, setClientMetadata: setClients } = useLiveData();
+  const { liveData, error } = useLiveData();
   const monitorMode = new URLSearchParams(location.search).get('view') === 'websites' ? 'websites' : 'servers';
-  const [clientsLoading, setClientsLoading] = useState(clients === undefined);
+  const initialBootstrap = useMemo(() => getCachedPublicBootstrap(), []);
+  const [clients, setClients] = useState<ClientInfo[]>(() => initialBootstrap?.clients || []);
+  const [clientsLoading, setClientsLoading] = useState(initialBootstrap?.clients === undefined);
   const [clientsError, setClientsError] = useState<string | null>(null);
   const [websites, setWebsites] = useState<WebsiteMonitorSummary[]>([]);
   const [websitesLoading, setWebsitesLoading] = useState(monitorMode === 'websites' && websites.length === 0);
   const [websitesError, setWebsitesError] = useState<string | null>(null);
   const [websitePeriodHours, setWebsitePeriodHours] = useState(24);
-  // The public view always keeps offline nodes last, including older saved preferences.
-  const offlinePosition = 'last';
+  const offlinePosition = useMemo(loadOfflinePosition, []);
 
   const handleWebsitePeriodChange = (hours: number) => {
     if (hours === websitePeriodHours) return;
@@ -217,8 +252,6 @@ export default function Index() {
   // Load client list
   useEffect(() => {
     let cancelled = false;
-    let clientsRequest = 0;
-    let pendingClientUpdates: PublicDataUpdateDetail[] | null = null;
     if (authLoading) {
       setClientsLoading(true);
       return () => {
@@ -233,23 +266,17 @@ export default function Index() {
     }
     setClientsLoading(true);
 
-    const loadClients = (updates: PublicDataUpdateDetail[] = pendingClientUpdates ?? []) => {
-      const request = ++clientsRequest;
-      pendingClientUpdates = updates;
-      const isCurrent = () => !cancelled && request === clientsRequest;
+    const loadClients = () => {
       fetchPublicBootstrap({ includeHidden: isAuthenticated })
         .then(data => {
           if (data.clients !== undefined) return data.clients;
           throw new Error('Bootstrap clients missing');
         })
-        .catch((loadError: unknown) => {
-          if (!isCurrent()) throw loadError;
-          return fetchWithBootstrapRetry(`/api/clients${isAuthenticated ? '?include_hidden=1' : ''}`)
-            .then(res => {
-              if (!res.ok) throw new Error(`HTTP ${res.status}`);
-              return res.json();
-            });
-        })
+        .catch(() => fetchWithBootstrapRetry(`/api/clients${isAuthenticated ? '?include_hidden=1' : ''}`)
+          .then(res => {
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            return res.json();
+          }))
         .then(data => {
           const clients = normalizePublicClients(data, { includeHidden: isAuthenticated });
           const listPayload = Array.isArray(data) ||
@@ -258,19 +285,18 @@ export default function Index() {
           throw new Error('客户端列表格式无效');
         })
         .then(data => {
-          if (isCurrent()) {
-            setClients(updates.reduce((clients, update) => applyPublicClientUpdate(clients, update, isAuthenticated), data));
+          if (!cancelled) {
+            setClients(current => current.length > 0 && data.length === 0 ? current : data);
             setClientsError(null);
           }
         })
         .catch((loadError: unknown) => {
-          if (isCurrent()) {
+          if (!cancelled) {
             setClientsError(loadError instanceof Error ? loadError.message : '客户端列表加载失败');
           }
         })
         .finally(() => {
-          if (isCurrent()) {
-            pendingClientUpdates = null;
+          if (!cancelled) {
             setClientsLoading(false);
             notifyPublicDataReady();
           }
@@ -284,34 +310,24 @@ export default function Index() {
       loadClients();
     };
     const refreshPublicClients = (detail?: PublicDataUpdateDetail) => {
-      setClients((current) => current === undefined ? undefined : applyPublicClientUpdate(current, detail, isAuthenticated));
+      clearCachedPublicBootstrap();
+      setClients((current) => applyPublicClientUpdate(current, detail, isAuthenticated));
       if (detail?.clients) {
-        // A delta cannot replace the pending full list. Replay it after that
-        // list arrives, including in the authorized view without public caching.
-        pendingClientUpdates?.push(detail);
+        setClientsLoading(false);
+        setClientsError(null);
+        notifyPublicDataReady();
         return;
       }
-      const request = ++clientsRequest;
-      const updates: PublicDataUpdateDetail[] = [];
-      pendingClientUpdates = updates;
-      const isCurrent = () => !cancelled && request === clientsRequest;
       fetchPublicBootstrap({ cache: 'reload', cacheBust: true, includeHidden: isAuthenticated })
         .then(data => {
           if (data.clients === undefined) throw new Error('Bootstrap clients missing');
-          if (isCurrent() && data.clients !== undefined) {
+          if (!cancelled && data.clients !== undefined) {
             const nextClients = data.clients;
-            setClients(updates.reduce((clients, update) => applyPublicClientUpdate(clients, update, isAuthenticated), nextClients));
+            setClients(current => current.length > 0 && nextClients.length === 0 ? current : nextClients);
             setClientsError(null);
           }
         })
-        .catch(() => { if (isCurrent()) loadClients(updates); })
-        .finally(() => {
-          if (isCurrent()) {
-            pendingClientUpdates = null;
-            setClientsLoading(false);
-            notifyPublicDataReady();
-          }
-        });
+        .catch(() => loadClients());
     };
 
     loadClients();
@@ -324,7 +340,7 @@ export default function Index() {
       document.removeEventListener('visibilitychange', loadWhenVisible);
       window.clearInterval(timer);
     };
-  }, [authLoading, monitorMode, isAuthenticated, setClients]);
+  }, [authLoading, monitorMode, isAuthenticated]);
 
   useEffect(() => {
     let cancelled = false;
@@ -341,13 +357,7 @@ export default function Index() {
       };
     }
 
-    let websiteRequest = 0;
-    let pendingWebsiteUpdates: Array<WebsiteMonitorsUpdateDetail> | null = null;
     const loadWebsites = (fresh = false) => {
-      const request = ++websiteRequest;
-      const updates: Array<WebsiteMonitorsUpdateDetail> = [];
-      pendingWebsiteUpdates = updates;
-      const isCurrent = () => !cancelled && request === websiteRequest;
       setWebsitesLoading(true);
       const url = `/api/websites?hours=${websitePeriodHours}${isAuthenticated ? '&include_hidden=1' : ''}${fresh ? `&_fresh=${Date.now()}` : ''}`;
       fetchWithBootstrapRetry(url, fresh ? { cache: 'reload' } : undefined)
@@ -356,20 +366,16 @@ export default function Index() {
           return res.json();
         })
         .then(data => {
-          if (!Array.isArray(data)) throw new Error('网站监控列表格式无效');
           const list = normalizeWebsiteSummaries(data, { includeHidden: isAuthenticated });
-          if (!isCurrent()) return;
-          setWebsites(updates.reduce((current, detail) => applyWebsiteMonitorUpdate(current, detail, { includeHidden: isAuthenticated }) || current, list));
+          if (cancelled) return;
+          setWebsites((current) => current.length > 0 && list.length === 0 ? current : list);
           setWebsitesError(null);
         })
         .catch((loadError: unknown) => {
-          if (isCurrent()) setWebsitesError(loadError instanceof Error ? loadError.message : '网站监控加载失败');
+          if (!cancelled) setWebsitesError(loadError instanceof Error ? loadError.message : '网站监控加载失败');
         })
         .finally(() => {
-          if (isCurrent()) {
-            pendingWebsiteUpdates = null;
-            setWebsitesLoading(false);
-          }
+          if (!cancelled) setWebsitesLoading(false);
         });
     };
 
@@ -385,7 +391,6 @@ export default function Index() {
         loadWebsites(true);
         return;
       }
-      pendingWebsiteUpdates?.push(detail);
       setWebsites((current) => {
         const applied = applyWebsiteMonitorUpdate(current, detail, { includeHidden: isAuthenticated });
         if (!applied) return current;
@@ -404,23 +409,34 @@ export default function Index() {
 
   // Normalize live data for the LiveDataMap type
   const liveMap: LiveDataMap = useMemo(() => {
-    if (!liveData) return { online: [], data: {}, last_known: {}, statusReady: false };
+    if (!liveData) return { online: [], data: {} };
     return {
       online: liveData.online || [],
       data: liveData.data || {},
       clients: liveData.clients || [],
-      last_known: liveData.last_known || {},
-      statusReady: snapshotReady,
     };
-  }, [liveData, snapshotReady]);
+  }, [liveData]);
 
-  const displayClients = mergeLiveClientMetadata(clients || [], liveMap.clients);
+  const displayClients = clients.length > 0 ? mergeLiveClientMetadata(clients, liveMap.clients) : liveClientsAsPublicClients(liveMap.clients);
 
   const stats = useMemo(() => {
     return getNodeStatsSummary(displayClients, liveMap);
   }, [displayClients, liveMap]);
 
-  const apiError = !clientsLoading ? (clientsError || error) : null;
+  // Apply offline server position sorting
+  const sortedClients = useMemo(() => {
+    if (offlinePosition === 'keep') return displayClients;
+    const onlineSet = liveMap.online;
+    return [...displayClients].sort((a, b) => {
+      const aOnline = onlineSet.includes(a.uuid);
+      const bOnline = onlineSet.includes(b.uuid);
+      if (aOnline === bOnline) return 0;
+      if (offlinePosition === 'first') return aOnline ? 1 : -1;
+      return aOnline ? -1 : 1;
+    });
+  }, [displayClients, offlinePosition, liveMap.online]);
+
+  const apiError = !clientsLoading && displayClients.length === 0 ? (clientsError || error) : null;
 
   const statusCards = buildDashboardStatusCards(stats);
 
@@ -430,10 +446,8 @@ export default function Index() {
         <NodeCard
           key={client.uuid}
           client={client}
-          live={getNodeDisplayRecord(client.uuid, ld)}
+          live={ld.data[client.uuid]}
           online={ld.online.includes(client.uuid)}
-          status={getNodeStatus(client.uuid, ld)}
-          lastReportTime={getNodeLastReportTime(client.uuid, ld)}
           includeHidden={isAuthenticated}
         />
       ))}
@@ -449,11 +463,11 @@ export default function Index() {
               <TopCard
                 key={card.key}
                 title={card.title}
-                value={snapshotReady && clients !== undefined ? card.value : '—'}
+                value={card.value}
                 detail={card.detail}
                 icon={statusIconByKey[card.key]}
                 oneLine={card.oneLine}
-                inlineValues={snapshotReady && clients !== undefined ? card.inlineValues : undefined}
+                inlineValues={card.inlineValues}
                 className={card.key === 'currentOnline' ? 'is-centered' : ''}
               />
             ))}
@@ -466,10 +480,8 @@ export default function Index() {
       {monitorMode === 'servers' ? (
         <React.Suspense fallback={null}>
           <NodeDisplay
-            nodes={displayClients}
+            nodes={sortedClients}
             liveData={liveMap}
-            loading={clients === undefined && clientsLoading}
-            dataAvailable={clients !== undefined}
             gridRenderer={renderGrid}
             offlinePosition={offlinePosition}
             includeHidden={isAuthenticated}

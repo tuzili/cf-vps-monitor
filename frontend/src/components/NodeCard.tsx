@@ -5,7 +5,7 @@ import { Activity, ArrowDown, ArrowUp, BarChart3, TrendingUp } from 'lucide-reac
 import Flag from './Flag';
 import PriceTags from './PriceTags';
 import MiniPingChartFloat from './MiniPingChartFloat';
-import { diskUsagePresentation, formatLastReport, formatMetricBytes, formatMetricSpeed, formatMetricUptime, metricNumber, resourceUsage, type NodeStatus } from '../utils/nodeMetrics';
+import { formatBytes, formatUptime } from '../utils/format';
 import { formatTrafficLimitLabel, parseTrafficLimitType } from '../utils/traffic';
 import { ClientInfo, LiveRecord } from '../types';
 import { getOSDisplay } from '../utils/osIcon';
@@ -16,10 +16,8 @@ import { getExpiryInfo } from '../utils/billing';
 
 interface NodeCardProps {
   client: ClientInfo;
-  live?: Partial<LiveRecord>;
+  live?: LiveRecord;
   online: boolean;
-  status?: NodeStatus;
-  lastReportTime?: number;
   includeHidden?: boolean;
 }
 
@@ -71,7 +69,7 @@ function CompactMetric({
   label: string;
   value: string;
   detail: string;
-  percent?: number | null;
+  percent?: number;
   title?: string;
 }) {
   return (
@@ -96,8 +94,7 @@ function getUsageLevel(percent: number) {
   return 'normal';
 }
 
-function formatPercent(value: number | null) {
-  if (value === null) return '—';
+function formatPercent(value: number) {
   const clamped = clampPercent(value);
   return `${clamped.toFixed(clamped < 10 ? 1 : 0)}%`;
 }
@@ -105,15 +102,11 @@ function formatPercent(value: number | null) {
 function RingMetric({
   label,
   percent,
-  estimated = false,
-  title,
 }: {
   label: string;
-  percent: number | null;
-  estimated?: boolean;
-  title?: string;
+  percent: number;
 }) {
-  const clamped = clampPercent(percent ?? 0);
+  const clamped = clampPercent(percent);
   const ringStyle = {
     '--metric-percent': `${clamped}%`,
   } as React.CSSProperties;
@@ -122,12 +115,11 @@ function RingMetric({
     <div
       className="node-resource-ring"
       data-monitor-role="resource-ring"
-      data-load={percent === null ? undefined : getUsageLevel(clamped)}
-      title={title}
+      data-load={getUsageLevel(clamped)}
     >
       <div className="node-resource-ring-chart" style={ringStyle}>
         <Text className="node-resource-ring-value" weight="bold">
-          {estimated && percent !== null ? '≈ ' : ''}{formatPercent(percent === null ? null : clamped)}
+          {formatPercent(clamped)}
         </Text>
       </div>
       <Text className="node-resource-ring-label" weight="bold">{label}</Text>
@@ -141,30 +133,30 @@ function NetworkSummary({
   totalUp,
   totalDown,
   uptimeLabel,
-  historical,
 }: {
   uploadSpeed: string;
   downloadSpeed: string;
-  totalUp: number | null;
-  totalDown: number | null;
+  totalUp: number;
+  totalDown: number;
   uptimeLabel: string;
-  historical: boolean;
 }) {
   return (
     <div className="node-network-panel" data-monitor-role="network-panel">
       <div className="node-network-summary-row" data-monitor-role="network-speed-summary">
         <Text className="node-network-summary-label" size="1" weight="bold">
           <Activity size={14} />
-          {historical ? '上报时网速' : '网速'}
+          网络速率
         </Text>
         <div className="node-network-summary-values">
-          <span className="node-network-value is-up" aria-label="上传速率">
+          <span className="node-network-value is-up">
             <ArrowUp size={13} />
-            <strong>{uploadSpeed}</strong>
+            <span className="node-network-direction">上</span>
+            <strong>{uploadSpeed}/s</strong>
           </span>
-          <span className="node-network-value is-down" aria-label="下载速率">
+          <span className="node-network-value is-down">
             <ArrowDown size={13} />
-            <strong>{downloadSpeed}</strong>
+            <span className="node-network-direction">下</span>
+            <strong>{downloadSpeed}/s</strong>
           </span>
         </div>
       </div>
@@ -172,16 +164,18 @@ function NetworkSummary({
       <div className="node-network-summary-row" data-monitor-role="network-traffic-summary">
         <Text className="node-network-summary-label" size="1" weight="bold">
           <BarChart3 size={14} />
-          流量
+          总流量
         </Text>
         <div className="node-network-summary-values">
-          <span className="node-network-value is-up" aria-label="上传总量">
+          <span className="node-network-value is-up">
             <ArrowUp size={13} />
-            <strong>{formatMetricBytes(totalUp)}</strong>
+            <span className="node-network-direction">上</span>
+            <strong>{formatBytes(totalUp)}</strong>
           </span>
-          <span className="node-network-value is-down" aria-label="下载总量">
+          <span className="node-network-value is-down">
             <ArrowDown size={13} />
-            <strong>{formatMetricBytes(totalDown)}</strong>
+            <span className="node-network-direction">下</span>
+            <strong>{formatBytes(totalDown)}</strong>
           </span>
         </div>
       </div>
@@ -189,7 +183,7 @@ function NetworkSummary({
       <div className="node-network-summary-row node-network-uptime-row" data-monitor-role="network-uptime-summary">
         <Text className="node-network-summary-label" size="1" weight="bold">
           <Activity size={14} />
-          {historical ? '上报时已运行' : '在线时长'}
+          在线时长
         </Text>
         <div className="node-network-summary-values node-network-uptime-values">
           <span className="node-network-value node-network-uptime-value">
@@ -214,27 +208,43 @@ function NodeIpBadges({ client, className }: { client: ClientInfo; className?: s
   );
 }
 
-export default function NodeCard({ client, live, online, status, lastReportTime, includeHidden = false }: NodeCardProps) {
+export default function NodeCard({ client, live, online, includeHidden = false }: NodeCardProps) {
   const isMobile = useIsMobile();
-  const defaultLive: Partial<LiveRecord> = {
-    temp: null,
+  const defaultLive: LiveRecord = {
+    cpu: 0,
+    ram: 0,
+    ram_total: 0,
+    swap: 0,
+    swap_total: 0,
+    disk: 0,
+    disk_total: 0,
+    net_in: 0,
+    net_out: 0,
+    net_total_up: 0,
+    net_total_down: 0,
+    load: 0,
+    temp: 0,
+    uptime: 0,
+    process_count: 0,
+    connections: 0,
+    connections_udp: 0,
   };
   const d = live || defaultLive;
-  const nodeStatus = status ?? (online ? 'online' : 'offline');
-  const cpuPct = metricNumber(d.cpu);
-  const memory = resourceUsage(d.ram, d.ram_total, client.mem_total);
-  const disk = diskUsagePresentation(d, client.disk_total);
-  const memPct = memory.percent;
-  const diskPct = disk.percent;
-  const totalUp = metricNumber(d.net_total_up);
-  const totalDown = metricNumber(d.net_total_down);
-  const uploadSpeed = formatMetricSpeed(d.net_out);
-  const downloadSpeed = formatMetricSpeed(d.net_in);
+  const cpuPct = d.cpu || 0;
+  const memTotal = client.mem_total || d.ram_total || 0;
+  const memPct = memTotal > 0 ? (d.ram / memTotal) * 100 : 0;
+  const diskTotal = client.disk_total || d.disk_total || 0;
+  const diskPct = diskTotal > 0 ? (d.disk / diskTotal) * 100 : 0;
+  const totalUp = d.net_total_up || 0;
+  const totalDown = d.net_total_down || 0;
+  const uploadSpeed = formatBytes(d.net_out || 0);
+  const downloadSpeed = formatBytes(d.net_in || 0);
   const osConfig = getOSDisplay(client.os || '');
   const trafficLimitLabel = formatTrafficLimitLabel(client.traffic_limit, client.traffic_limit_type);
-  const uptimeLabel = formatMetricUptime(d.uptime);
-  const memDetail = `${formatMetricBytes(memory.used)} / ${formatMetricBytes(memory.total)}`;
-  const diskDetail = disk.detail;
+  const uptimeLabel = online && d.uptime > 0 ? formatUptime(d.uptime) : '-';
+  const uptimeFooterLabel = online ? uptimeLabel : '当前离线';
+  const memDetail = `${formatBytes(d.ram)} / ${formatBytes(memTotal)}`;
+  const diskDetail = `${formatBytes(d.disk)} / ${formatBytes(diskTotal)}`;
   const cpuDetail = formatCpuCardLabel(client.cpu_name, client.cpu_cores);
   const cpuTitle = formatCpuSpec(client.cpu_name, client.cpu_cores);
 
@@ -242,15 +252,15 @@ export default function NodeCard({ client, live, online, status, lastReportTime,
     if (!client.traffic_limit || client.traffic_limit <= 0) return 0;
     const type = parseTrafficLimitType(client.traffic_limit_type);
     switch (type) {
-      case 'max': return totalUp === null || totalDown === null ? null : Math.max(totalUp, totalDown);
-      case 'min': return totalUp === null || totalDown === null ? null : Math.min(totalUp, totalDown);
+      case 'max': return Math.max(totalUp, totalDown);
+      case 'min': return Math.min(totalUp, totalDown);
       case 'up': return totalUp;
       case 'down': return totalDown;
       case 'sum':
-      default: return totalUp === null || totalDown === null ? null : totalUp + totalDown;
+      default: return totalUp + totalDown;
     }
   })();
-  const trafficPct = client.traffic_limit > 0 && trafficUsed !== null ? Math.min(100, (trafficUsed / client.traffic_limit) * 100) : undefined;
+  const trafficPct = client.traffic_limit > 0 ? Math.min(100, (trafficUsed / client.traffic_limit) * 100) : undefined;
   const hasBillingInfo = (client.price !== undefined && client.price !== 0) || Boolean(getExpiryInfo(client.expired_at).label);
   const handleCardLinkClick = (event: React.MouseEvent<HTMLAnchorElement>) => {
     const target = event.target as HTMLElement | null;
@@ -304,7 +314,7 @@ export default function NodeCard({ client, live, online, status, lastReportTime,
                 chartWidth={460}
                 chartHeight={260}
                 limit={360}
-                rangeHours={4}
+                rangeHours={1}
                 includeHidden={includeHidden}
                 trigger={
                   <IconButton className="node-card-action" data-node-card-action="true" variant="ghost" size="2" aria-label="查看 Ping 延迟" title="查看 Ping 延迟走势">
@@ -312,12 +322,11 @@ export default function NodeCard({ client, live, online, status, lastReportTime,
                   </IconButton>
                 }
               />
-              <Badge color={nodeStatus === 'online' ? 'green' : nodeStatus === 'offline' ? 'red' : 'gray'} variant="solid" radius="full">
-                {nodeStatus === 'online' ? '在线' : nodeStatus === 'offline' ? '离线' : '确认中'}
+              <Badge color={online ? 'green' : 'red'} variant="solid" radius="full">
+                {online ? '在线' : '离线'}
               </Badge>
             </Flex>
           </Flex>
-          {nodeStatus === 'offline' && <Text size="1" color="gray">最后上报 {formatLastReport(lastReportTime)}{!live && ' · 暂无上报数据'}</Text>}
           <Flex className="node-card-title-meta" align="center" gap="2">
             <span className="node-os-chip">
               <img src={osConfig.image} alt="" aria-hidden="true" />
@@ -363,10 +372,10 @@ export default function NodeCard({ client, live, online, status, lastReportTime,
               <div className="node-metric-grid">
                 <CompactMetric label="CPU" value={formatPercent(cpuPct)} detail={cpuDetail} title={cpuTitle} percent={cpuPct} />
                 <CompactMetric label="内存" value={formatPercent(memPct)} detail={memDetail} percent={memPct} />
-                <CompactMetric label={disk.estimated ? '磁盘（估算）' : '磁盘'} value={`${disk.estimated && diskPct !== null ? '≈ ' : ''}${formatPercent(diskPct)}`} detail={diskDetail} title={disk.estimated ? `${disk.description} ${disk.sampleLabel}` : undefined} percent={diskPct} />
+                <CompactMetric label="磁盘" value={formatPercent(diskPct)} detail={diskDetail} percent={diskPct} />
                 <CompactMetric
                   label="月度"
-                  value={trafficLimitLabel ? trafficPct === undefined ? '—' : `${trafficPct.toFixed(0)}%` : '-'}
+                  value={trafficLimitLabel ? `${trafficPct?.toFixed(0) || 0}%` : '-'}
                   detail={trafficLimitLabel || '未设置'}
                   percent={trafficLimitLabel ? trafficPct : undefined}
                 />
@@ -376,8 +385,7 @@ export default function NodeCard({ client, live, online, status, lastReportTime,
                 downloadSpeed={downloadSpeed}
                 totalUp={totalUp}
                 totalDown={totalDown}
-                uptimeLabel={uptimeLabel}
-                historical={nodeStatus === 'offline'}
+                uptimeLabel={uptimeFooterLabel}
               />
             </div>
 
@@ -385,7 +393,7 @@ export default function NodeCard({ client, live, online, status, lastReportTime,
               <div className="node-resource-ring-grid">
                 <RingMetric label="CPU" percent={cpuPct} />
                 <RingMetric label="RAM" percent={memPct} />
-                <RingMetric label={disk.estimated ? 'Disk（估算）' : 'Disk'} percent={diskPct} estimated={disk.estimated} title={disk.estimated ? `${disk.description} ${disk.detail} ${disk.sampleLabel}` : undefined} />
+                <RingMetric label="Disk" percent={diskPct} />
               </div>
 
               <NetworkSummary
@@ -393,8 +401,7 @@ export default function NodeCard({ client, live, online, status, lastReportTime,
                 downloadSpeed={downloadSpeed}
                 totalUp={totalUp}
                 totalDown={totalDown}
-                uptimeLabel={uptimeLabel}
-                historical={nodeStatus === 'offline'}
+                uptimeLabel={uptimeFooterLabel}
               />
             </div>
           </Flex>

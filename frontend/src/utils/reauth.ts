@@ -10,20 +10,12 @@ function makePromptId(prefix: string) {
 export function requestPassword(title: string, options: RequestPasswordOptions = {}): Promise<string | null> {
   return new Promise((resolve) => {
     let settled = false;
-    const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    const overlay = document.createElement('dialog');
+    const overlay = document.createElement('div');
     overlay.setAttribute('role', 'dialog');
     overlay.setAttribute('aria-modal', 'true');
     overlay.style.cssText = [
       'position:fixed',
       'inset:0',
-      'width:100%',
-      'height:100%',
-      'max-width:none',
-      'max-height:none',
-      'box-sizing:border-box',
-      'border:0',
-      'margin:0',
       'z-index:2147483647',
       'display:flex',
       'align-items:center',
@@ -45,8 +37,6 @@ export function requestPassword(title: string, options: RequestPasswordOptions =
 
     const inputId = makePromptId('password-prompt');
     const label = document.createElement('label');
-    label.id = `${inputId}-title`;
-    overlay.setAttribute('aria-labelledby', label.id);
     label.htmlFor = inputId;
     label.textContent = title;
     label.style.cssText = 'display:block;font-size:14px;font-weight:600;margin-bottom:10px;line-height:1.45;color:#111827';
@@ -97,25 +87,13 @@ export function requestPassword(title: string, options: RequestPasswordOptions =
     const close = (value: string | null) => {
       if (settled) return;
       settled = true;
-      if (overlay.open) overlay.close();
+      document.removeEventListener('keydown', onDocumentKeyDown);
       overlay.remove();
-      if (previousFocus?.isConnected) previousFocus.focus();
       resolve(value);
     };
-    overlay.addEventListener('cancel', (event) => { event.preventDefault(); close(null); });
-    overlay.addEventListener('close', () => close(null));
-    overlay.addEventListener('keydown', (event) => {
-      if (event.key !== 'Tab') return;
-      // Native modality makes the background inert, but Chromium can otherwise
-      // move Shift+Tab from the first control into browser chrome (activeElement=body).
-      if (event.shiftKey && (document.activeElement === input || !overlay.contains(document.activeElement))) {
-        event.preventDefault();
-        confirm.focus();
-      } else if (!event.shiftKey && document.activeElement === confirm) {
-        event.preventDefault();
-        input.focus();
-      }
-    });
+    const onDocumentKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') close(null);
+    };
 
     cancel.addEventListener('click', () => close(null));
     overlay.addEventListener('click', (event) => {
@@ -136,11 +114,15 @@ export function requestPassword(title: string, options: RequestPasswordOptions =
       }
       close(input.value);
     });
+    panel.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape') close(null);
+    });
+
     actions.append(cancel, confirm);
     panel.append(label, input, errorText, actions);
     overlay.append(panel);
     document.body.append(overlay);
-    overlay.showModal();
+    document.addEventListener('keydown', onDocumentKeyDown);
     input.focus();
   });
 }

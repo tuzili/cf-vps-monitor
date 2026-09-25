@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, useEffect, useCallback, useRef, ReactNode } from 'react';
+import { createContext, useContext, useState, useEffect, useCallback, ReactNode } from 'react';
 import { getSessionStorageItem, removeSessionStorageItem, setSessionStorageItem } from '../utils/browserStorage';
 import { API_BASE, CSRF_COOKIE_NAME, buildApiRequest, readCookie } from '../utils/api';
 import {
@@ -14,8 +14,7 @@ interface AuthContextType {
   user: User | null;
   login: (username: string, password: string) => Promise<LoginResult>;
   completeMfaLogin: (challenge: string, method: MfaMethod, code: string) => Promise<LoginResult>;
-  logout: () => Promise<void>;
-  clearAuth: () => void;
+  logout: () => void;
   updateUser: (nextUser: Partial<User>) => void;
   isAuthenticated: boolean;
   authLoading: boolean;
@@ -25,8 +24,7 @@ const AuthContext = createContext<AuthContextType>({
   user: null,
   login: async () => ({ kind: 'error', error: '登录不可用' }),
   completeMfaLogin: async () => ({ kind: 'error', error: '登录不可用' }),
-  logout: async () => {},
-  clearAuth: () => {},
+  logout: () => {},
   updateUser: () => {},
   isAuthenticated: false,
   authLoading: true,
@@ -59,20 +57,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const initialUser = readStoredUser();
   const [user, setUser] = useState<User | null>(initialUser);
   const [authLoading, setAuthLoading] = useState(true);
-  const authRevisionRef = useRef(0);
-  const logoutRequestRef = useRef<Promise<void> | null>(null);
 
   const clearAuth = useCallback(() => {
-    authRevisionRef.current += 1;
     clearStoredUser();
     setUser(null);
-    setAuthLoading(false);
   }, []);
 
   useEffect(() => {
     let cancelled = false;
-    const revision = authRevisionRef.current;
-    const isCurrent = () => !cancelled && authRevisionRef.current === revision;
     const pathname = typeof window === 'undefined' ? '/' : window.location.pathname;
     const shouldCheckSession = shouldCheckAdminSessionOnLoad(pathname);
     if (!shouldCheckSession) {
@@ -95,18 +87,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         return nextUser;
       })
       .then((nextUser) => {
-        if (isCurrent() && nextUser) {
+        if (!cancelled && nextUser) {
           writeStoredUser(nextUser);
           setUser((current) => current && current.uuid === nextUser.uuid && current.username === nextUser.username ? current : nextUser);
-        } else if (isCurrent()) {
+        } else if (!cancelled) {
           clearAuth();
         }
       })
       .catch(() => {
-        if (isCurrent()) clearAuth();
+        if (!cancelled) clearAuth();
       })
       .finally(() => {
-        if (isCurrent()) setAuthLoading(false);
+        if (!cancelled) setAuthLoading(false);
       });
 
     return () => {
@@ -118,10 +110,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     if (result.kind !== 'success') return result;
     const nextUser = normalizeAuthUser(result.user);
     if (!nextUser) return { kind: 'error', error: '登录响应无效' };
-    authRevisionRef.current += 1;
     writeStoredUser(nextUser);
     setUser(nextUser);
-    setAuthLoading(false);
     return { kind: 'success', user: nextUser };
   }, []);
 
@@ -158,25 +148,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [finishLogin]);
 
   const logout = useCallback(() => {
-    if (logoutRequestRef.current) return logoutRequestRef.current;
-    authRevisionRef.current += 1;
-    const request = (async () => {
-      const headers = new Headers();
-      const csrfToken = readCookie(CSRF_COOKIE_NAME);
-      if (csrfToken) headers.set('X-CSRF-Token', csrfToken);
-      const response = await fetch(`${API_BASE}/logout`, { method: 'POST', credentials: 'same-origin', headers });
-      const data = await readJson(response);
-      if (!response.ok || data.success !== true) throw new Error(data.error || `退出失败（HTTP ${response.status}）`);
-      clearAuth();
-    })().finally(() => {
-      if (logoutRequestRef.current === request) logoutRequestRef.current = null;
-    });
-    logoutRequestRef.current = request;
-    return request;
+    clearAuth();
+    const headers = new Headers();
+    const csrfToken = readCookie(CSRF_COOKIE_NAME);
+    if (csrfToken) {
+      headers.set('X-CSRF-Token', csrfToken);
+    }
+    fetch(`${API_BASE}/logout`, {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers,
+    }).catch(() => {});
   }, [clearAuth]);
 
   const updateUser = useCallback((nextUser: Partial<User>) => {
-    authRevisionRef.current += 1;
     setUser((current) => {
       if (!current) return current;
       const updated = { ...current, ...nextUser };
@@ -191,7 +176,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       login,
       completeMfaLogin,
       logout,
-      clearAuth,
       updateUser,
       isAuthenticated: !!user,
       authLoading,
@@ -205,8 +189,8 @@ export function useAuth() {
   return useContext(AuthContext);
 }
 
-export function useApiResponse() {
-  const { clearAuth } = useAuth();
+export function useApi() {
+  const { logout } = useAuth();
 
   const apiFetch = useCallback(async (path: string, options: RequestInit = {}) => {
     const res = await runWithMfaStepUpRetry(
@@ -216,24 +200,18 @@ export function useApiResponse() {
       },
       requestMfaStepUp,
     );
+    const data = await readJson(res);
+
     if (!res.ok) {
-      const data = await readJson(res);
       if (shouldClearAuthForStatus(res.status)) {
-        clearAuth();
+        logout();
       }
       const details = Array.isArray(data.details) ? `: ${data.details.join('；')}` : '';
       throw new Error(data.error ? `${data.error}${details}` : `HTTP ${res.status}`);
     }
 
-    return res;
-  }, [clearAuth]);
+    return data;
+  }, [logout]);
 
   return apiFetch;
-}
-
-export function useApi() {
-  const apiResponseFetch = useApiResponse();
-  return useCallback(async (path: string, options: RequestInit = {}) => {
-    return readJson(await apiResponseFetch(path, options));
-  }, [apiResponseFetch]);
 }
